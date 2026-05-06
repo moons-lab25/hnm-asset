@@ -362,45 +362,74 @@ with tabs[0]:
                 st.info("자산 스냅샷 데이터가 충분하지 않습니다.")
 
         with tab_chart2:
-            # [추가] 소유자별/증권사별 수익금 차트 데이터 가공
+            st.markdown("<p style='font-size: 15px; color: #616161; margin-bottom: 5px;'>💡 <b>수익금(Y축)</b>과 <b>수익률(X축)</b>을 동시에 보여주는 <b>포트폴리오 효율성 차트</b>입니다.</p>", unsafe_allow_html=True)
+            st.markdown("<p style='font-size: 13px; color: #9e9e9e; margin-top: 0;'>* 원의 크기는 투자 원금 비중이며, 1사분면(우상단)에 위치할수록 고수익금/고수익률 자산입니다.</p>", unsafe_allow_html=True)
+            
             profit_data = []
             if not live_port.empty:
                 for _, r in live_port.iterrows():
-                    profit_data.append({'Owner': r['Owner'], 'Broker': r['Broker'], 'Profit': r['Profit_Amt']})
+                    profit_data.append({'Owner': r['Owner'], 'Broker': r['Broker'], 'Invested': r['Total_Invested'], 'Profit': r['Profit_Amt']})
             if not df_latest_manual.empty:
                 man_fin = df_latest_manual[df_latest_manual['Category'] == '금융자산(수기)']
                 for _, r in man_fin.iterrows():
-                    profit_data.append({'Owner': r['Owner'], 'Broker': r['Sub_Category'], 'Profit': r['Profit']})
+                    inv = r['Amount'] - r['Profit']
+                    profit_data.append({'Owner': r['Owner'], 'Broker': r['Sub_Category'], 'Invested': inv, 'Profit': r['Profit']})
             
             df_profit = pd.DataFrame(profit_data)
             if not df_profit.empty:
-                df_profit_agg = df_profit.groupby(['Owner', 'Broker'])['Profit'].sum().reset_index()
+                df_profit_agg = df_profit.groupby(['Owner', 'Broker'])[['Invested', 'Profit']].sum().reset_index()
+                df_profit_agg['Return(%)'] = (df_profit_agg['Profit'] / df_profit_agg['Invested'] * 100).fillna(0)
                 
-                fig_profit = px.bar(
+                # 버블 차트 렌더링을 위해 최소 크기 보정 (시각적 오류 방지용)
+                df_profit_agg['Invested_disp'] = df_profit_agg['Invested'].apply(lambda x: max(abs(x), 100_000)) 
+                
+                fig_bubble = px.scatter(
                     df_profit_agg, 
-                    x='Owner', 
+                    x='Return(%)', 
                     y='Profit', 
-                    color='Broker', 
-                    barmode='group',
-                    text='Profit',
+                    size='Invested_disp', 
+                    color='Owner', 
+                    text='Broker',
+                    hover_name='Broker',
+                    hover_data={'Owner': False, 'Broker': False, 'Invested_disp': False, 'Invested': ':,.0f', 'Profit': ':,.0f', 'Return(%)': ':.2f'},
                     color_discrete_sequence=px.colors.qualitative.Pastel
                 )
-                fig_profit.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-                fig_profit.update_layout(
+                
+                fig_bubble.update_traces(
+                    textposition='top center', 
+                    textfont=dict(size=12, color='#424242', weight='bold'),
+                    marker=dict(line=dict(width=1, color='DarkSlateGrey'), opacity=0.8)
+                )
+                
+                # 0을 기준으로 십자선 추가
+                fig_bubble.add_hline(y=0, line_dash="solid", line_color="#e0e0e0", line_width=1.5)
+                fig_bubble.add_vline(x=0, line_dash="solid", line_color="#e0e0e0", line_width=1.5)
+                
+                fig_bubble.update_layout(
                     height=450,
-                    xaxis_title="",
+                    xaxis_title="수익률 (%)",
                     yaxis_title="수익금 (원)",
                     plot_bgcolor='white', 
                     paper_bgcolor='white',
-                    legend_title="증권사/분류",
+                    legend_title="소유자",
                     margin=dict(l=0, r=0, t=30, b=0)
                 )
-                fig_profit.update_xaxes(showgrid=False)
-                fig_profit.update_yaxes(showgrid=True, gridcolor='#f5f5f5')
-                st.plotly_chart(fig_profit, use_container_width=True)
+                fig_bubble.update_xaxes(showgrid=True, gridcolor='#f5f5f5', zeroline=False)
+                fig_bubble.update_yaxes(showgrid=True, gridcolor='#f5f5f5', zeroline=False)
+                st.plotly_chart(fig_bubble, use_container_width=True)
+                
+                # 하단에 정확한 수치 확인을 위한 상세 표 추가
+                st.markdown("##### 📋 증권사별 상세 수익 내역")
+                disp_df = df_profit_agg[['Owner', 'Broker', 'Invested', 'Profit', 'Return(%)']].sort_values(by='Profit', ascending=False)
+                disp_df.columns = ['소유자', '증권사(항목)', '투자원금', '수익금', '수익률(%)']
+                
+                styled_disp = disp_df.style.map(color_profit, subset=['수익금', '수익률(%)']).format({
+                    '투자원금': '{:,.0f}', '수익금': '{:,.0f}', '수익률(%)': '{:.2f}%'
+                })
+                st.dataframe(styled_disp, use_container_width=True, hide_index=True)
             else:
                 st.info("표시할 수익금 데이터가 없습니다.")
-
+                
         with tab_chart3:
             if not df_latest_manual.empty or not live_port.empty:
                 manual_fin_df = df_latest_manual[df_latest_manual["Category"] == "금융자산(수기)"].copy()
