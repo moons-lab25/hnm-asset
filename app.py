@@ -10,9 +10,7 @@ from streamlit_gsheets import GSheetsConnection
 # --- 설정 및 컬럼 정의 ---
 ASSET_COLUMNS = ["Record_Date", "Owner", "Category", "Sub_Category", "Liquidity", "Amount", "Profit", "Note"]
 SIM_COLUMNS = ["Sim_Date", "Target_Age", "Monthly_Investment", "Result_Final_Asset"]
-# 계좌 종류(Account_Type) 추가
 PORTFOLIO_COLUMNS = ["Owner", "Broker", "Account_Type", "Ticker", "Stock_Name", "Liquidity", "Shares", "Avg_Price", "LastUpdated"] 
-# 실현손익 및 절세 관리용 시트 추가
 REALIZED_COLUMNS = ["Date", "Owner", "Category", "Item", "Amount", "Note"]
 
 EOK = 100_000_000
@@ -85,8 +83,9 @@ def load_history() -> pd.DataFrame:
     df = safe_to_numeric(df, "Profit")
     
     if not df.empty:
+        # [에러 방어] 결측치(NaN, <NA>)를 빈 문자열로 안전하게 치환
         for c in ["Owner", "Category", "Sub_Category", "Liquidity", "Note"]:
-            df[c] = df[c].astype(str).replace('<NA>', '').replace('nan', '')
+            df[c] = df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
         
         df['Category'] = df['Category'].replace("금융자산", "금융자산(수기)")
 
@@ -116,7 +115,11 @@ def load_realized() -> pd.DataFrame:
         df = conn.read(worksheet="Realized", ttl=0).dropna(how="all")
     except Exception:
         df = pd.DataFrame(columns=REALIZED_COLUMNS)
+    
     df = _ensure_columns(df, REALIZED_COLUMNS)
+    # [에러 방어] 결측치 치환
+    for c in ["Date", "Owner", "Category", "Item", "Note"]:
+        df[c] = df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
     df = safe_to_numeric(df, "Amount")
     return df
 
@@ -139,8 +142,16 @@ def get_live_portfolio() -> pd.DataFrame:
         
     port_df = _ensure_columns(port_df, PORTFOLIO_COLUMNS)
     
+    # [에러 방어 핵심] 기존 데이터에 계좌 종류(Account_Type)가 없어서 나는 에러 원천 차단
+    if not port_df.empty:
+        port_df['Account_Type'] = port_df['Account_Type'].fillna('일반').astype(str).replace({'<NA>': '일반', 'nan': '일반', 'None': '일반', '': '일반'})
+        
+        # 다른 주요 문자열 컬럼들도 안전하게 문자열 치환
+        for c in ["Owner", "Broker", "Ticker", "Stock_Name"]:
+            port_df[c] = port_df[c].fillna('미입력').astype(str).replace({'<NA>': '미입력', 'nan': '미입력', 'None': '미입력'})
+
     def auto_fill_port_liquidity(row):
-        if pd.isna(row.get('Liquidity')) or str(row.get('Liquidity')).strip() in ["", "nan", "<NA>"]:
+        if pd.isna(row.get('Liquidity')) or str(row.get('Liquidity')).strip() in ["", "nan", "<NA>", "미입력"]:
             if any(k in str(row.get('Account_Type', '')) for k in ['연금', 'IRP']):
                 return "비유동"
             return "유동"
@@ -156,7 +167,7 @@ def get_live_portfolio() -> pd.DataFrame:
     
     def is_us_stock(ticker):
         t = str(ticker).strip().upper()
-        if t == "CASH" or not t or t == "NAN": return False
+        if t in ["CASH", "미입력"] or not t or t == "NAN": return False
         return not (len(t) == 6 and t[0].isdigit())
 
     port_df['Is_US'] = port_df['Ticker'].apply(is_us_stock)
@@ -214,7 +225,6 @@ with tabs[0]:
     if df_hist.empty and live_port.empty:
         st.warning("데이터가 없습니다. 자산을 등록해주세요.")
     else:
-        # (기존 요약 지표 계산 로직)
         if not df_hist.empty:
             latest_dt = df_hist['Record_DT'].max()
             df_latest_manual = df_hist[(df_hist['Record_DT'] == latest_dt) & (df_hist['Category'] != "금융자산(자동)")].copy()
@@ -285,23 +295,19 @@ with tabs[0]:
         # --- 🚨 절세 및 실현 손익 현황판 (Tax Radar) ---
         st.markdown("### 🚨 세금 알리미 & 절세 계좌 현황")
         
-        # 올해 연도 추출 및 필터링
         curr_year = str(date.today().year)
         df_real['Year'] = pd.to_datetime(df_real['Date'], errors='coerce').dt.year.astype(str)
         df_this_year = df_real[df_real['Year'] == curr_year]
         
-        # 1. 해외주식 양도소득
         os_profit = df_this_year[df_this_year['Category'] == '해외주식매도']['Amount'].sum()
         os_tax = max(0, (os_profit - 2500000) * 0.22)
         os_pct = min(100, (os_profit / 2500000) * 100) if os_profit > 0 else 0
         os_color = "#e53935" if os_profit > 2500000 else "#43a047"
         
-        # 2. 금융소득 (배당/이자)
         fin_income = df_this_year[df_this_year['Category'] == '배당/이자']['Amount'].sum()
         fin_pct = min(100, (fin_income / 20000000) * 100) if fin_income > 0 else 0
         fin_color = "#e53935" if fin_income > 20000000 else "#fdd835" if fin_income > 15000000 else "#1e88e5"
 
-        # 3. 절세 계좌 납입 현황 (연 2천만 원 한도 / 연금 900만 원 한도 가정)
         isa_cont = df_this_year[df_this_year['Category'] == 'ISA납입']['Amount'].sum()
         isa_pct = min(100, (isa_cont / 20000000) * 100) if isa_cont > 0 else 0
         pen_cont = df_this_year[df_this_year['Category'] == '연금납입']['Amount'].sum()
@@ -310,7 +316,6 @@ with tabs[0]:
         st.markdown(f"""
         <div style="background-color: #fcfcfc; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
             <div style="display: flex; flex-wrap: wrap; gap: 20px;">
-                <!-- 양도세 & 금융소득 -->
                 <div style="flex: 1; min-width: 250px;">
                     <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🌍 해외주식 양도소득세 (250만 원 공제)</p>
                     <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
@@ -326,7 +331,6 @@ with tabs[0]:
                     </div>
                     <p style="margin: 0; font-size: 12px; color: #757575;">올해 누적 배당/이자: {fin_income/10000:,.0f}만 원</p>
                 </div>
-                <!-- 납입 한도 -->
                 <div style="flex: 1; min-width: 250px; border-left: 1px solid #eeeeee; padding-left: 20px;">
                     <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🛡️ ISA 올해 납입 한도 (2,000만 원)</p>
                     <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
@@ -346,7 +350,6 @@ with tabs[0]:
 
         st.divider()
 
-        # (기존 차트 섹션 탭 생략 없이 그대로 유지)
         trend_df = pd.DataFrame()
         if not df_hist.empty:
             trend_df = df_hist.groupby('Record_Date').apply(lambda x: pd.Series({
@@ -392,10 +395,15 @@ with tabs[0]:
 
         with tab_chart3:
             if not live_port.empty:
-                fig_acc = px.sunburst(live_port, path=['Owner', 'Account_Type', 'Broker'], values='Current_Value', color='Account_Type', color_discrete_sequence=px.colors.qualitative.Set3)
-                fig_acc.update_traces(textinfo="label+percent root", insidetextorientation='radial')
-                fig_acc.update_layout(height=280, margin=dict(l=0, r=0, t=0, b=0))
-                st.plotly_chart(fig_acc, use_container_width=True)
+                # [에러 방어 핵심 2] 빈 값이 하나라도 있으면 Plotly Sunburst가 충돌하므로 완전한 데이터만 필터링해서 그림
+                plot_df = live_port.dropna(subset=['Owner', 'Account_Type', 'Broker'])
+                plot_df = plot_df[(plot_df['Owner'] != '') & (plot_df['Account_Type'] != '') & (plot_df['Broker'] != '')]
+                
+                if not plot_df.empty:
+                    fig_acc = px.sunburst(plot_df, path=['Owner', 'Account_Type', 'Broker'], values='Current_Value', color='Account_Type', color_discrete_sequence=px.colors.qualitative.Set3)
+                    fig_acc.update_traces(textinfo="label+percent root", insidetextorientation='radial')
+                    fig_acc.update_layout(height=280, margin=dict(l=0, r=0, t=0, b=0))
+                    st.plotly_chart(fig_acc, use_container_width=True)
 
 # --- 2. 자산 일괄 관리 ---
 with tabs[1]:
@@ -475,7 +483,6 @@ with tabs[2]:
 
     st.divider()
     
-    # [신규 추가] 실현 손익 및 절세 기록 에디터
     st.markdown("##### 📥 실현 손익 및 절세/배당 기록부")
     st.info("주식을 매도하여 이익을 확정했거나, 배당금 수령, 연금/ISA에 현금을 납입했을 때 가끔씩 뭉텅이로 입력해두면 대시보드에서 세금을 계산해 줍니다.")
     
