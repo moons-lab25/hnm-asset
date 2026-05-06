@@ -83,7 +83,6 @@ def load_history() -> pd.DataFrame:
     df = safe_to_numeric(df, "Profit")
     
     if not df.empty:
-        # [에러 방어] 결측치(NaN, <NA>)를 빈 문자열로 안전하게 치환
         for c in ["Owner", "Category", "Sub_Category", "Liquidity", "Note"]:
             df[c] = df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
         
@@ -117,7 +116,6 @@ def load_realized() -> pd.DataFrame:
         df = pd.DataFrame(columns=REALIZED_COLUMNS)
     
     df = _ensure_columns(df, REALIZED_COLUMNS)
-    # [에러 방어] 결측치 치환
     for c in ["Date", "Owner", "Category", "Item", "Note"]:
         df[c] = df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
     df = safe_to_numeric(df, "Amount")
@@ -142,11 +140,8 @@ def get_live_portfolio() -> pd.DataFrame:
         
     port_df = _ensure_columns(port_df, PORTFOLIO_COLUMNS)
     
-    # [에러 방어 핵심] 기존 데이터에 계좌 종류(Account_Type)가 없어서 나는 에러 원천 차단
     if not port_df.empty:
         port_df['Account_Type'] = port_df['Account_Type'].fillna('일반').astype(str).replace({'<NA>': '일반', 'nan': '일반', 'None': '일반', '': '일반'})
-        
-        # 다른 주요 문자열 컬럼들도 안전하게 문자열 치환
         for c in ["Owner", "Broker", "Ticker", "Stock_Name"]:
             port_df[c] = port_df[c].fillna('미입력').astype(str).replace({'<NA>': '미입력', 'nan': '미입력', 'None': '미입력'})
 
@@ -263,36 +258,35 @@ with tabs[0]:
         wife_rate, wife_color = get_owner_stats("본인")
         husband_rate, husband_color = get_owner_stats("남편")
 
-        # 상단 요약 카드 
         principal = financial_assets - financial_profits
         fin_return_rate = (financial_profits / principal * 100) if principal > 0 else 0
         profit_color = "#d32f2f" if financial_profits > 0 else "#1976d2" 
         profit_display = f"{financial_profits/EOK:,.2f}억" if abs(financial_profits) >= EOK else f"{financial_profits/10000:,.0f}만"
 
+        # [수정] 마크다운 블록 오류 방지용 좌측 정렬 및 빈 줄 제거
         st.markdown(f"""
-        <div style="display: flex; flex-wrap: wrap; gap: 10px; text-align: center; margin-bottom: 20px;">
-            <div style="flex: 1 1 30%; min-width: 140px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
-                <p style="margin: 0; font-size: 13px; color: #757575;">현재 순자산 (부채 차감)</p>
-                <p style="margin: 5px 0 0 0; font-size: 22px; font-weight: 800; color: #424242;">{net_worth/EOK:,.2f} 억</p>
-            </div>
-            <div style="flex: 1 1 30%; min-width: 140px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
-                <p style="margin: 0; font-size: 13px; color: #757575;">금융자산 합계</p>
-                <p style="margin: 5px 0 0 0; font-size: 22px; font-weight: 800; color: #1565c0;">{financial_assets/EOK:,.2f} 억</p>
-            </div>
-            <div style="flex: 1 1 30%; min-width: 200px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
-                <p style="margin: 0; font-size: 13px; color: #757575;">총 수익률 (미실현+실현)</p>
-                <p style="margin: 5px 0 8px 0; font-size: 22px; font-weight: 800; color: {profit_color};">
-                    {fin_return_rate:.2f}% <span style="font-size: 16px; font-weight: bold;">({profit_display})</span>
-                </p>
-                <div style="display: flex; justify-content: space-around; border-top: 1px solid #eeeeee; padding-top: 8px; margin-top: 5px;">
-                    <span style="font-size: 13px; color: #616161;">👩 본인: <strong style="color: {wife_color};">{wife_rate:.1f}%</strong></span>
-                    <span style="font-size: 13px; color: #616161;">👨 남편: <strong style="color: {husband_color};">{husband_rate:.1f}%</strong></span>
-                </div>
-            </div>
+<div style="display: flex; flex-wrap: wrap; gap: 10px; text-align: center; margin-bottom: 20px;">
+    <div style="flex: 1 1 30%; min-width: 140px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
+        <p style="margin: 0; font-size: 13px; color: #757575;">현재 순자산 (부채 차감)</p>
+        <p style="margin: 5px 0 0 0; font-size: 22px; font-weight: 800; color: #424242;">{net_worth/EOK:,.2f} 억</p>
+    </div>
+    <div style="flex: 1 1 30%; min-width: 140px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
+        <p style="margin: 0; font-size: 13px; color: #757575;">금융자산 합계</p>
+        <p style="margin: 5px 0 0 0; font-size: 22px; font-weight: 800; color: #1565c0;">{financial_assets/EOK:,.2f} 억</p>
+    </div>
+    <div style="flex: 1 1 30%; min-width: 200px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
+        <p style="margin: 0; font-size: 13px; color: #757575;">총 수익률 (미실현+실현)</p>
+        <p style="margin: 5px 0 8px 0; font-size: 22px; font-weight: 800; color: {profit_color};">
+            {fin_return_rate:.2f}% <span style="font-size: 16px; font-weight: bold;">({profit_display})</span>
+        </p>
+        <div style="display: flex; justify-content: space-around; border-top: 1px solid #eeeeee; padding-top: 8px; margin-top: 5px;">
+            <span style="font-size: 13px; color: #616161;">👩 본인: <strong style="color: {wife_color};">{wife_rate:.1f}%</strong></span>
+            <span style="font-size: 13px; color: #616161;">👨 남편: <strong style="color: {husband_color};">{husband_rate:.1f}%</strong></span>
         </div>
-        """, unsafe_allow_html=True)
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-        # --- 🚨 절세 및 실현 손익 현황판 (Tax Radar) ---
         st.markdown("### 🚨 세금 알리미 & 절세 계좌 현황")
         
         curr_year = str(date.today().year)
@@ -313,40 +307,37 @@ with tabs[0]:
         pen_cont = df_this_year[df_this_year['Category'] == '연금납입']['Amount'].sum()
         pen_pct = min(100, (pen_cont / 9000000) * 100) if pen_cont > 0 else 0
 
+        # [수정] 마크다운 블록 오류 방지용 좌측 정렬 및 빈 줄 제거
         st.markdown(f"""
-        <div style="background-color: #fcfcfc; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
-            <div style="display: flex; flex-wrap: wrap; gap: 20px;">
-                <div style="flex: 1; min-width: 250px;">
-                    <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🌍 해외주식 양도소득세 (250만 원 공제)</p>
-                    <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
-                        <div style="background-color: {os_color}; width: {os_pct}%; height: 100%; border-radius: 5px;"></div>
-                    </div>
-                    <p style="margin: 0 0 15px 0; font-size: 12px; color: #757575;">
-                        실현 수익: {os_profit/10000:,.0f}만 원 <strong style="color:{os_color};">(예상 세금: {os_tax/10000:,.0f}만 원)</strong>
-                    </p>
-                    
-                    <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">💰 금융소득종합과세 (2,000만 원 한도)</p>
-                    <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
-                        <div style="background-color: {fin_color}; width: {fin_pct}%; height: 100%; border-radius: 5px;"></div>
-                    </div>
-                    <p style="margin: 0; font-size: 12px; color: #757575;">올해 누적 배당/이자: {fin_income/10000:,.0f}만 원</p>
-                </div>
-                <div style="flex: 1; min-width: 250px; border-left: 1px solid #eeeeee; padding-left: 20px;">
-                    <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🛡️ ISA 올해 납입 한도 (2,000만 원)</p>
-                    <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
-                        <div style="background-color: #8e24aa; width: {isa_pct}%; height: 100%; border-radius: 5px;"></div>
-                    </div>
-                    <p style="margin: 0 0 15px 0; font-size: 12px; color: #757575;">납입액: {isa_cont/10000:,.0f}만 원 (잔여 {max(0, 20000000-isa_cont)/10000:,.0f}만 원)</p>
-                    
-                    <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🏛️ 연금저축/IRP 세액공제 (900만 원)</p>
-                    <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
-                        <div style="background-color: #00897b; width: {pen_pct}%; height: 100%; border-radius: 5px;"></div>
-                    </div>
-                    <p style="margin: 0; font-size: 12px; color: #757575;">납입액: {pen_cont/10000:,.0f}만 원 (추가 필요 {max(0, 9000000-pen_cont)/10000:,.0f}만 원)</p>
-                </div>
+<div style="background-color: #fcfcfc; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+    <div style="display: flex; flex-wrap: wrap; gap: 20px;">
+        <div style="flex: 1; min-width: 250px;">
+            <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🌍 해외주식 양도소득세 (250만 원 공제)</p>
+            <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
+                <div style="background-color: {os_color}; width: {os_pct}%; height: 100%; border-radius: 5px;"></div>
             </div>
+            <p style="margin: 0 0 15px 0; font-size: 12px; color: #757575;">실현 수익: {os_profit/10000:,.0f}만 원 <strong style="color:{os_color};">(예상 세금: {os_tax/10000:,.0f}만 원)</strong></p>
+            <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">💰 금융소득종합과세 (2,000만 원 한도)</p>
+            <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
+                <div style="background-color: {fin_color}; width: {fin_pct}%; height: 100%; border-radius: 5px;"></div>
+            </div>
+            <p style="margin: 0; font-size: 12px; color: #757575;">올해 누적 배당/이자: {fin_income/10000:,.0f}만 원</p>
         </div>
-        """, unsafe_allow_html=True)
+        <div style="flex: 1; min-width: 250px; border-left: 1px solid #eeeeee; padding-left: 20px;">
+            <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🛡️ ISA 올해 납입 한도 (2,000만 원)</p>
+            <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
+                <div style="background-color: #8e24aa; width: {isa_pct}%; height: 100%; border-radius: 5px;"></div>
+            </div>
+            <p style="margin: 0 0 15px 0; font-size: 12px; color: #757575;">납입액: {isa_cont/10000:,.0f}만 원 (잔여 {max(0, 20000000-isa_cont)/10000:,.0f}만 원)</p>
+            <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🏛️ 연금저축/IRP 세액공제 (900만 원)</p>
+            <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
+                <div style="background-color: #00897b; width: {pen_pct}%; height: 100%; border-radius: 5px;"></div>
+            </div>
+            <p style="margin: 0; font-size: 12px; color: #757575;">납입액: {pen_cont/10000:,.0f}만 원 (추가 필요 {max(0, 9000000-pen_cont)/10000:,.0f}만 원)</p>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
         st.divider()
 
@@ -395,7 +386,6 @@ with tabs[0]:
 
         with tab_chart3:
             if not live_port.empty:
-                # [에러 방어 핵심 2] 빈 값이 하나라도 있으면 Plotly Sunburst가 충돌하므로 완전한 데이터만 필터링해서 그림
                 plot_df = live_port.dropna(subset=['Owner', 'Account_Type', 'Broker'])
                 plot_df = plot_df[(plot_df['Owner'] != '') & (plot_df['Account_Type'] != '') & (plot_df['Broker'] != '')]
                 
