@@ -215,7 +215,6 @@ with tabs[0]:
         financial_assets = manual_fin + live_fin_asset
         financial_profits = live_fin_profit + df_latest_manual[df_latest_manual["Category"] == "금융자산(수기)"]["Profit"].sum()
 
-        # 본인/남편 개인별 수익률 계산 로직 추가
         def get_owner_stats(owner_name):
             port_inv = live_port[live_port['Owner'] == owner_name]['Total_Invested'].sum() if not live_port.empty else 0
             port_prof = live_port[live_port['Owner'] == owner_name]['Profit_Amt'].sum() if not live_port.empty else 0
@@ -278,64 +277,67 @@ with tabs[0]:
         else:
             profit_display = f"{financial_profits/10000:,.0f}만원"
 
-        # 금융자산 총 수익률 카드 안에 개인별 수익률 추가
         st.markdown(f"""
         <div style="display: flex; gap: 20px; text-align: center; margin-bottom: 30px;">
-            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #f1f8e9; border: 1px solid #c5e1a5;">
-                <p style="margin: 0; font-size: 16px; color: #555;">현재 순자산 (부채 차감)</p>
-                <p style="margin: 5px 0 0 0; font-size: 32px; font-weight: 800; color: #2e7d32;">{net_worth/EOK:,.2f} 억</p>
+            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #ffffff; border: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <p style="margin: 0; font-size: 16px; color: #757575;">현재 순자산 (부채 차감)</p>
+                <p style="margin: 5px 0 0 0; font-size: 32px; font-weight: 800; color: #424242;">{net_worth/EOK:,.2f} 억</p>
             </div>
-            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #e3f2fd; border: 1px solid #90caf9;">
-                <p style="margin: 0; font-size: 16px; color: #555;">금융자산 합계</p>
+            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #ffffff; border: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <p style="margin: 0; font-size: 16px; color: #757575;">금융자산 합계</p>
                 <p style="margin: 5px 0 0 0; font-size: 32px; font-weight: 800; color: #1565c0;">{financial_assets/EOK:,.2f} 억</p>
             </div>
-            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #fff8e1; border: 1px solid #ffe082;">
-                <p style="margin: 0; font-size: 16px; color: #555;">금융자산 총 수익률</p>
+            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #ffffff; border: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <p style="margin: 0; font-size: 16px; color: #757575;">금융자산 총 수익률</p>
                 <p style="margin: 5px 0 10px 0; font-size: 32px; font-weight: 800; color: {profit_color};">
                     {fin_return_rate:.2f}% <span style="font-size: 20px; font-weight: bold;">({profit_display})</span>
                 </p>
-                <div style="display: flex; justify-content: space-around; border-top: 1px solid #ffe082; padding-top: 12px; margin-top: 10px;">
-                    <span style="font-size: 15px; color: #555;">👩 본인: <strong style="color: {wife_color};">{wife_rate:.2f}%</strong></span>
-                    <span style="font-size: 15px; color: #555;">👨 남편: <strong style="color: {husband_color};">{husband_rate:.2f}%</strong></span>
+                <div style="display: flex; justify-content: space-around; border-top: 1px solid #eeeeee; padding-top: 12px; margin-top: 10px;">
+                    <span style="font-size: 15px; color: #616161;">👩 본인: <strong style="color: {wife_color};">{wife_rate:.2f}%</strong></span>
+                    <span style="font-size: 15px; color: #616161;">👨 남편: <strong style="color: {husband_color};">{husband_rate:.2f}%</strong></span>
                 </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown(f"### 🚩 목표 달성 현황 ({target_date.strftime('%Y년 %m월 %d일')}까지 {target_fin_goal/EOK:.0f}억)")
-        progress_pct = min(1.0, financial_assets / target_fin_goal)
+        # --- 개편된 목표 달성 현황 섹션 ---
+        st.markdown("### 🚩 목표 달성 현황 및 향후 시뮬레이션")
         
-        fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
-            value = financial_assets / EOK,
-            number = {'suffix': " 억", 'font': {'size': 40, 'color': '#1565c0', 'weight': 'bold'}},
-            delta = {'reference': target_fin_goal / EOK, 'position': "top", 'prefix': "목표까지 남은 금액: ", 'suffix': "억"},
-            title = {'text': "금융자산 달성률", 'font': {'size': 20}},
-            gauge = {
-                'axis': {'range': [None, target_fin_goal / EOK], 'tickwidth': 1, 'tickcolor': "darkblue"},
-                'bar': {'color': "#1e88e5"},
-                'bgcolor': "white",
-                'borderwidth': 2,
-                'bordercolor': "gray",
-                'steps': [
-                    {'range': [0, (target_fin_goal / EOK) * 0.5], 'color': '#e3f2fd'},
-                    {'range': [(target_fin_goal / EOK) * 0.5, (target_fin_goal / EOK) * 0.8], 'color': '#bbdefb'}],
-                'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': target_fin_goal / EOK}
-            }
-        ))
-        fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=30, b=20))
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        today_date = date.today()
+        months_left = (target_date.year - today_date.year) * 12 + target_date.month - today_date.month
+        if target_date.day < today_date.day:
+            months_left -= 1
+        months_left = max(1, months_left) # 0으로 나누기 방지
+        
+        remaining_asset = max(0, target_fin_goal - financial_assets)
+        required_monthly_savings = remaining_asset / months_left
+        progress_pct = min(1.0, financial_assets / target_fin_goal) * 100
+
+        st.markdown(f"""
+        <div style="background-color: #ffffff; border: 1px solid #eeeeee; border-radius: 8px; padding: 25px; text-align: center; margin-bottom: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+            <p style="font-size: 18px; color: #424242; margin-bottom: 10px;">목표 달성일인 <strong>{target_date.strftime('%Y년 %m월')}</strong>까지 <strong>{months_left}개월</strong> 남았습니다.</p>
+            <p style="font-size: 16px; color: #757575; margin-bottom: 20px;">
+                목표 금액 <strong>{target_fin_goal/EOK:.1f}억</strong> 중 현재 <strong>{financial_assets/EOK:.2f}억</strong> (달성률 {progress_pct:.1f}%)
+            </p>
+            <hr style="border-top: 1px dashed #e0e0e0; margin: 20px 0;"/>
+            <h4 style="color: #1976d2; margin: 0; font-weight: 600;">
+                💡 목표 달성을 위해 매월 <span style="font-size: 26px; color: #d32f2f;">{required_monthly_savings/10000:,.0f}만 원</span>을 추가로 투자해야 합니다.
+            </h4>
+            <p style="font-size: 13px; color: #9e9e9e; margin-top: 10px;">* 단순 원금 누적 기준 계산 (수익률 변동 미반영)</p>
+        </div>
+        """, unsafe_allow_html=True)
 
         st.divider()
 
-        col_chart1, col_chart2 = st.columns([3, 2]) 
+        # --- 차트 섹션 ---
+        st.markdown("### 📈 상세 대시보드")
+        tab_chart1, tab_chart2, tab_chart3 = st.tabs(["자산 추이", "소유/증권사별 수익", "자산 구성 비중"]) 
 
-        with col_chart1:
-            st.markdown("### 📈 자산 및 부채 추이 흐름")
+        with tab_chart1:
             if not trend_df.empty:
                 fig_trend = go.Figure()
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#66bb6a'))
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#b0bec5'))
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#81c784'))
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#cfd8dc'))
                 fig_trend.add_trace(go.Scatter(
                     x=trend_df['Record_Date'], y=trend_df['순자산']/EOK, mode='lines+markers+text', 
                     text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"),
@@ -343,11 +345,63 @@ with tabs[0]:
                     textfont=dict(size=13, color='#2e7d32', weight='bold'),
                     line=dict(color='#2e7d32', width=3), marker=dict(size=8, color='white', line=dict(width=2, color='#2e7d32'))
                 ))
-                fig_trend.update_layout(height=400, barmode='relative', hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
+                fig_trend.update_layout(
+                    height=450, 
+                    barmode='relative', 
+                    xaxis_type='category', # [수정] 스냅샷이 있는 날짜만 표시되도록 강제 지정
+                    hovermode="x unified", 
+                    plot_bgcolor='white', 
+                    paper_bgcolor='white',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), 
+                    margin=dict(l=0, r=0, t=30, b=0)
+                )
+                fig_trend.update_xaxes(showgrid=False)
+                fig_trend.update_yaxes(showgrid=True, gridcolor='#f5f5f5')
                 st.plotly_chart(fig_trend, use_container_width=True)
+            else:
+                st.info("자산 스냅샷 데이터가 충분하지 않습니다.")
 
-        with col_chart2:
-            st.markdown("### 🧩 금융자산 구성 비중")
+        with tab_chart2:
+            # [추가] 소유자별/증권사별 수익금 차트 데이터 가공
+            profit_data = []
+            if not live_port.empty:
+                for _, r in live_port.iterrows():
+                    profit_data.append({'Owner': r['Owner'], 'Broker': r['Broker'], 'Profit': r['Profit_Amt']})
+            if not df_latest_manual.empty:
+                man_fin = df_latest_manual[df_latest_manual['Category'] == '금융자산(수기)']
+                for _, r in man_fin.iterrows():
+                    profit_data.append({'Owner': r['Owner'], 'Broker': r['Sub_Category'], 'Profit': r['Profit']})
+            
+            df_profit = pd.DataFrame(profit_data)
+            if not df_profit.empty:
+                df_profit_agg = df_profit.groupby(['Owner', 'Broker'])['Profit'].sum().reset_index()
+                
+                fig_profit = px.bar(
+                    df_profit_agg, 
+                    x='Owner', 
+                    y='Profit', 
+                    color='Broker', 
+                    barmode='group',
+                    text='Profit',
+                    color_discrete_sequence=px.colors.qualitative.Pastel
+                )
+                fig_profit.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+                fig_profit.update_layout(
+                    height=450,
+                    xaxis_title="",
+                    yaxis_title="수익금 (원)",
+                    plot_bgcolor='white', 
+                    paper_bgcolor='white',
+                    legend_title="증권사/분류",
+                    margin=dict(l=0, r=0, t=30, b=0)
+                )
+                fig_profit.update_xaxes(showgrid=False)
+                fig_profit.update_yaxes(showgrid=True, gridcolor='#f5f5f5')
+                st.plotly_chart(fig_profit, use_container_width=True)
+            else:
+                st.info("표시할 수익금 데이터가 없습니다.")
+
+        with tab_chart3:
             if not df_latest_manual.empty or not live_port.empty:
                 manual_fin_df = df_latest_manual[df_latest_manual["Category"] == "금융자산(수기)"].copy()
                 auto_fin_df = pd.DataFrame()
@@ -359,18 +413,19 @@ with tabs[0]:
                 combined_fin = pd.concat([manual_fin_df, auto_fin_df], ignore_index=True)
                 combined_fin['Root'] = '전체 금융자산'
 
-                tab_sun1, tab_sun2 = st.tabs(["💧 유동성 기준", "🏢 증권사 기준"])
-                
-                with tab_sun1:
+                col_sun1, col_sun2 = st.columns(2)
+                with col_sun1:
+                    st.markdown("<p style='text-align:center; font-weight:bold;'>💧 유동성 기준</p>", unsafe_allow_html=True)
                     fig_liq = px.sunburst(combined_fin, path=['Root', 'Owner', 'Liquidity'], values='Amount', color='Owner', color_discrete_sequence=px.colors.qualitative.Pastel)
                     fig_liq.update_traces(textinfo="label+percent root", insidetextorientation='radial')
-                    fig_liq.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0))
+                    fig_liq.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0))
                     st.plotly_chart(fig_liq, use_container_width=True)
                     
-                with tab_sun2:
+                with col_sun2:
+                    st.markdown("<p style='text-align:center; font-weight:bold;'>🏢 증권사 기준</p>", unsafe_allow_html=True)
                     fig_broker = px.sunburst(combined_fin, path=['Root', 'Owner', 'Sub_Category'], values='Amount', color='Owner', color_discrete_sequence=px.colors.qualitative.Set3)
                     fig_broker.update_traces(textinfo="label+percent root", insidetextorientation='radial')
-                    fig_broker.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0))
+                    fig_broker.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0))
                     st.plotly_chart(fig_broker, use_container_width=True)
 
 # --- 2. 자산 일괄 관리 ---
@@ -382,7 +437,6 @@ with tabs[1]:
     editor_df = df_hist[df_hist['Category'] != '금융자산(자동)'].copy()
     editor_df = editor_df.drop(columns=["Record_DT", "Record_Month"], errors="ignore")
     
-    # st.form을 활용하여 데이터 수정 시 자동 새로고침 방지
     with st.form("manual_asset_form"):
         edited_df = st.data_editor(
             editor_df, num_rows="dynamic", use_container_width=True, height=400,
@@ -449,7 +503,6 @@ with tabs[2]:
 
     port_df = get_live_portfolio().drop(columns=['Is_US', 'Avg_Price_KRW', 'Current_Price', 'Total_Invested', 'Current_Value', 'Profit_Amt'], errors='ignore')
     
-    # st.form을 활용하여 포트폴리오 데이터 수정 시 자동 새로고침 방지
     with st.form("portfolio_form"):
         edited_port = st.data_editor(
             port_df, num_rows="dynamic", use_container_width=True, height=250,
