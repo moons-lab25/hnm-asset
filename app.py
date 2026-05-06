@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 import os
 import FinanceDataReader as fdr
-from streamlit_gsheets import GSheetsConnection # 구글 시트 연결용 추가
+from streamlit_gsheets import GSheetsConnection 
 
 ASSET_COLUMNS = ["Record_Date", "Owner", "Category", "Sub_Category", "Liquidity", "Amount", "Profit", "Note"]
 SIM_COLUMNS = ["Sim_Date", "Target_Age", "Monthly_Investment", "Result_Final_Asset"]
@@ -72,7 +72,6 @@ def get_gsheets_conn():
 def load_history() -> pd.DataFrame:
     conn = get_gsheets_conn()
     try:
-        # ttl=0으로 설정하여 항상 최신 데이터를 불러옴 (캐시 무시)
         df = conn.read(worksheet="AssetHistory", ttl=0).dropna(how="all")
     except Exception:
         df = pd.DataFrame(columns=ASSET_COLUMNS)
@@ -216,6 +215,25 @@ with tabs[0]:
         financial_assets = manual_fin + live_fin_asset
         financial_profits = live_fin_profit + df_latest_manual[df_latest_manual["Category"] == "금융자산(수기)"]["Profit"].sum()
 
+        # 본인/남편 개인별 수익률 계산 로직 추가
+        def get_owner_stats(owner_name):
+            port_inv = live_port[live_port['Owner'] == owner_name]['Total_Invested'].sum() if not live_port.empty else 0
+            port_prof = live_port[live_port['Owner'] == owner_name]['Profit_Amt'].sum() if not live_port.empty else 0
+            
+            man_df = df_latest_manual[(df_latest_manual["Category"] == "금융자산(수기)") & (df_latest_manual["Owner"] == owner_name)]
+            man_prof = man_df["Profit"].sum()
+            man_inv = man_df["Amount"].sum() - man_prof
+            
+            tot_inv = port_inv + man_inv
+            tot_prof = port_prof + man_prof
+            
+            rate = (tot_prof / tot_inv * 100) if tot_inv > 0 else 0
+            color = "#d32f2f" if rate > 0 else "#1976d2" if rate < 0 else "#555"
+            return rate, color
+            
+        wife_rate, wife_color = get_owner_stats("본인")
+        husband_rate, husband_color = get_owner_stats("남편")
+
         summary_message = "첫 자산 스냅샷을 기록하시면 다음부터 이전 기록과 비교해 드릴게요!"
         trend_df = pd.DataFrame()
         if not df_hist.empty:
@@ -260,6 +278,7 @@ with tabs[0]:
         else:
             profit_display = f"{financial_profits/10000:,.0f}만원"
 
+        # 금융자산 총 수익률 카드 안에 개인별 수익률 추가
         st.markdown(f"""
         <div style="display: flex; gap: 20px; text-align: center; margin-bottom: 30px;">
             <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #f1f8e9; border: 1px solid #c5e1a5;">
@@ -272,9 +291,13 @@ with tabs[0]:
             </div>
             <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #fff8e1; border: 1px solid #ffe082;">
                 <p style="margin: 0; font-size: 16px; color: #555;">금융자산 총 수익률</p>
-                <p style="margin: 5px 0 0 0; font-size: 32px; font-weight: 800; color: {profit_color};">
+                <p style="margin: 5px 0 10px 0; font-size: 32px; font-weight: 800; color: {profit_color};">
                     {fin_return_rate:.2f}% <span style="font-size: 20px; font-weight: bold;">({profit_display})</span>
                 </p>
+                <div style="display: flex; justify-content: space-around; border-top: 1px solid #ffe082; padding-top: 12px; margin-top: 10px;">
+                    <span style="font-size: 15px; color: #555;">👩 본인: <strong style="color: {wife_color};">{wife_rate:.2f}%</strong></span>
+                    <span style="font-size: 15px; color: #555;">👨 남편: <strong style="color: {husband_color};">{husband_rate:.2f}%</strong></span>
+                </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -359,24 +382,28 @@ with tabs[1]:
     editor_df = df_hist[df_hist['Category'] != '금융자산(자동)'].copy()
     editor_df = editor_df.drop(columns=["Record_DT", "Record_Month"], errors="ignore")
     
-    edited_df = st.data_editor(
-        editor_df, num_rows="dynamic", use_container_width=True, height=400,
-        column_config={
-            "Record_Date": st.column_config.TextColumn("날짜", required=True),
-            "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
-            "Category": st.column_config.SelectboxColumn("분류", options=["부동산", "금융자산(수기)", "부채", "기타"]),
-            "Sub_Category": st.column_config.TextColumn("상세 항목"),
-            "Liquidity": st.column_config.SelectboxColumn("유동성", options=["유동", "비유동"]),
-            "Amount": st.column_config.NumberColumn("금액(원)", format="%,d"),
-            "Profit": st.column_config.NumberColumn("수익(원)", format="%,d"),
-        }
-    )
-    if st.button("💾 수기 데이터 최종 저장", key="save_hist"):
-        auto_df = df_hist[df_hist['Category'] == '금융자산(자동)'].drop(columns=["Record_DT", "Record_Month"], errors="ignore")
-        final_save_df = pd.concat([edited_df, auto_df], ignore_index=True)
-        save_history(final_save_df)
-        st.success("수기 자산이 구글 시트에 저장되었습니다.")
-        st.rerun()
+    # st.form을 활용하여 데이터 수정 시 자동 새로고침 방지
+    with st.form("manual_asset_form"):
+        edited_df = st.data_editor(
+            editor_df, num_rows="dynamic", use_container_width=True, height=400,
+            column_config={
+                "Record_Date": st.column_config.TextColumn("날짜", required=True),
+                "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
+                "Category": st.column_config.SelectboxColumn("분류", options=["부동산", "금융자산(수기)", "부채", "기타"]),
+                "Sub_Category": st.column_config.TextColumn("상세 항목"),
+                "Liquidity": st.column_config.SelectboxColumn("유동성", options=["유동", "비유동"]),
+                "Amount": st.column_config.NumberColumn("금액(원)", format="%,d"),
+                "Profit": st.column_config.NumberColumn("수익(원)", format="%,d"),
+            }
+        )
+        
+        submitted_hist = st.form_submit_button("💾 수기 데이터 최종 저장")
+        if submitted_hist:
+            auto_df = df_hist[df_hist['Category'] == '금융자산(자동)'].drop(columns=["Record_DT", "Record_Month"], errors="ignore")
+            final_save_df = pd.concat([edited_df, auto_df], ignore_index=True)
+            save_history(final_save_df)
+            st.success("수기 자산이 구글 시트에 저장되었습니다.")
+            st.rerun()
 
 # --- 3. 주식/포트폴리오 관리 ---
 with tabs[2]:
@@ -422,23 +449,26 @@ with tabs[2]:
 
     port_df = get_live_portfolio().drop(columns=['Is_US', 'Avg_Price_KRW', 'Current_Price', 'Total_Invested', 'Current_Value', 'Profit_Amt'], errors='ignore')
     
-    edited_port = st.data_editor(
-        port_df, num_rows="dynamic", use_container_width=True, height=250,
-        column_config={
-            "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
-            "Broker": st.column_config.TextColumn("증권사(예: KB증권)", required=True),
-            "Ticker": st.column_config.TextColumn("종목코드(미국주식 예: AAPL)", required=True),
-            "Stock_Name": st.column_config.TextColumn("종목명", required=True),
-            "Liquidity": st.column_config.SelectboxColumn("유동성", options=["유동", "비유동"], required=True),
-            "Shares": st.column_config.NumberColumn("보유수량", format="%,d", min_value=0),
-            "Avg_Price": st.column_config.NumberColumn("평균매수가(원화 기준)", min_value=0.0),
-        }
-    )
-    
-    if st.button("💾 포트폴리오 저장", key="save_port"):
-        save_portfolio(edited_port)
-        st.success("포트폴리오가 구글 시트에 저장되었습니다.")
-        st.rerun()
+    # st.form을 활용하여 포트폴리오 데이터 수정 시 자동 새로고침 방지
+    with st.form("portfolio_form"):
+        edited_port = st.data_editor(
+            port_df, num_rows="dynamic", use_container_width=True, height=250,
+            column_config={
+                "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
+                "Broker": st.column_config.TextColumn("증권사(예: KB증권)", required=True),
+                "Ticker": st.column_config.TextColumn("종목코드(미국주식 예: AAPL)", required=True),
+                "Stock_Name": st.column_config.TextColumn("종목명", required=True),
+                "Liquidity": st.column_config.SelectboxColumn("유동성", options=["유동", "비유동"], required=True),
+                "Shares": st.column_config.NumberColumn("보유수량", format="%,d", min_value=0),
+                "Avg_Price": st.column_config.NumberColumn("평균매수가(원화 기준)", min_value=0.0),
+            }
+        )
+        
+        submitted_port = st.form_submit_button("💾 포트폴리오 저장")
+        if submitted_port:
+            save_portfolio(edited_port)
+            st.success("포트폴리오가 구글 시트에 저장되었습니다.")
+            st.rerun()
         
     st.divider()
     
