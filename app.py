@@ -294,7 +294,7 @@ with tabs[0]:
 </div>
 """, unsafe_allow_html=True)
 
-        # [요구사항 1] 스냅샷 대비 증감 코멘트 추가
+        # 스냅샷 대비 증감 코멘트
         if snap_date_str != "없음":
             diff_net_worth = net_worth - snap_net_worth
             if diff_net_worth > 0:
@@ -321,7 +321,6 @@ with tabs[0]:
         fin_pct = min(100, (fin_income / 20000000) * 100) if fin_income > 0 else 0
         fin_color = "#e53935" if fin_income > 20000000 else "#fdd835" if fin_income > 15000000 else "#1e88e5"
 
-        # [요구사항 2] 세금 알리미에서 ISA 및 연금저축 한도 영역 삭제
         st.markdown(f"""
 <div style="background-color: #fcfcfc; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
     <div style="display: flex; flex-wrap: wrap; gap: 20px;">
@@ -354,10 +353,45 @@ with tabs[0]:
             trend_df['순자산'] = trend_df['총자산'] - trend_df['총부채']
             trend_df = trend_df.sort_values('Record_Date')
 
-        # [요구사항 4] 탭 변경 및 종목별 비중(히트맵) 추가
-        tab_chart1, tab_chart2, tab_chart3 = st.tabs(["자산 추이", "종목별 비중(히트맵)", "계좌별 비중"]) 
+        tab_chart1, tab_chart2, tab_chart3 = st.tabs(["종목별 비중(히트맵)", "자산 추이", "계좌별 비중"]) 
 
         with tab_chart1:
+            if not live_port.empty:
+                hm_df = live_port.groupby(['Owner', 'Stock_Name'])[['Current_Value', 'Total_Invested', 'Profit_Amt']].sum().reset_index()
+                hm_df = hm_df[hm_df['Current_Value'] > 0]
+                
+                if not hm_df.empty:
+                    hm_df['Return(%)'] = hm_df.apply(lambda x: (x['Profit_Amt'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
+                    
+                    fig_hm = px.treemap(
+                        hm_df, 
+                        path=[px.Constant('전체 포트폴리오'), 'Owner', 'Stock_Name'], 
+                        values='Current_Value',
+                        color='Return(%)',
+                        color_continuous_scale='RdBu_r', 
+                        color_continuous_midpoint=0
+                    )
+                    
+                    # 툴팁에 상위 카테고리 대비 비중(percentParent) 추가
+                    fig_hm.update_traces(
+                        texttemplate="<b>%{label}</b><br>%{value:,.0f}원<br>(%{color:.1f}%)",
+                        hovertemplate=(
+                            "<b>%{label}</b><br>"
+                            "평가액: %{value:,.0f}원<br>"
+                            "수익률: %{color:.1f}%<br>"
+                            "상위 그룹 대비 비중: %{percentParent:.1%}<br>"
+                            "<extra></extra>"
+                        ),
+                        textposition="middle center",
+                        textfont=dict(size=14)
+                    )
+                    fig_hm.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
+                    st.plotly_chart(fig_hm, use_container_width=True)
+                else:
+                    st.info("비중을 표시할 주식 자산이 없습니다.")
+
+
+        with tab_chart2:
             if not trend_df.empty:
                 fig_trend = go.Figure()
                 fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#81c784'))
@@ -370,36 +404,8 @@ with tabs[0]:
                 ))
                 fig_trend.update_layout(height=300, barmode='relative', xaxis_type='category', hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_trend, use_container_width=True)
-
-        with tab_chart2:
-            if not live_port.empty:
-                # 소유자, 종목명 기준으로 합산 (계좌 무시)
-                hm_df = live_port.groupby(['Owner', 'Stock_Name'])[['Current_Value', 'Total_Invested', 'Profit_Amt']].sum().reset_index()
-                hm_df = hm_df[hm_df['Current_Value'] > 0] # 가치가 0인 자산 제외
                 
-                if not hm_df.empty:
-                    hm_df['Return(%)'] = hm_df.apply(lambda x: (x['Profit_Amt'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
-                    
-                    fig_hm = px.treemap(
-                        hm_df, 
-                        path=[px.Constant('전체 포트폴리오'), 'Owner', 'Stock_Name'], 
-                        values='Current_Value',
-                        color='Return(%)',
-                        color_continuous_scale='RdBu_r', # 한국 기준 (상승:빨강, 하락:파랑)
-                        color_continuous_midpoint=0,
-                        custom_data=['Return(%)', 'Current_Value', 'Profit_Amt']
-                    )
-                    
-                    fig_hm.update_traces(
-                        texttemplate="<b>%{label}</b><br>%{customdata[1]:,.0f}원<br>(%{customdata[0]:.1f}%)",
-                        textposition="middle center",
-                        textfont=dict(size=14)
-                    )
-                    fig_hm.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
-                    st.plotly_chart(fig_hm, use_container_width=True)
-                else:
-                    st.info("비중을 표시할 주식 자산이 없습니다.")
-
+            
         with tab_chart3:
             if not live_port.empty:
                 plot_df = live_port.dropna(subset=['Owner', 'Account_Type', 'Broker'])
@@ -507,7 +513,7 @@ with tabs[2]:
             st.success("세금 및 실현 손익 데이터가 반영되었습니다.")
             st.rerun()
 
-# --- 4. 포트폴리오 분석 (실시간 평가 및 합계 분리) ---
+# --- 4. 포트폴리오 분석 ---
 with tabs[3]:
     st.markdown("#### 🔍 실시간 포트폴리오 분석")
     calc_df = get_live_portfolio()
@@ -527,18 +533,15 @@ with tabs[3]:
         st.divider()
         st.markdown("##### 🏢 소유자 및 증권사별 합계")
         
-        # [요구사항 3] 증권사별 합계에 소유자 정보를 추가하고 소계 표시
         summary_base = calc_df.groupby(['Owner', 'Broker'])[['Total_Invested', 'Current_Value']].sum().reset_index()
         
         final_rows = []
         for owner in summary_base['Owner'].unique():
             owner_data = summary_base[summary_base['Owner'] == owner]
             
-            # 개별 증권사 데이터 추가
             for _, row in owner_data.iterrows():
                 final_rows.append(row.to_dict())
             
-            # 소유자별 소계 추가
             owner_inv = owner_data['Total_Invested'].sum()
             owner_val = owner_data['Current_Value'].sum()
             final_rows.append({
@@ -548,7 +551,6 @@ with tabs[3]:
                 'Current_Value': owner_val
             })
             
-        # 전체 합계 추가
         grand_inv = summary_base['Total_Invested'].sum()
         grand_val = summary_base['Current_Value'].sum()
         final_rows.append({
