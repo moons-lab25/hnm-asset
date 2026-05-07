@@ -21,7 +21,7 @@ def _ensure_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
     for c in cols:
         if c not in df.columns:
-            df[c] = pd.NA
+            df[c] = ""
     return df[cols]
 
 def safe_to_numeric(df: pd.DataFrame, col: str) -> pd.DataFrame:
@@ -52,7 +52,7 @@ def get_usd_krw_rate() -> float:
 @st.cache_data(ttl=3600)
 def get_current_price(ticker: str) -> float:
     ticker = str(ticker).strip().upper()
-    if ticker == "CASH" or not ticker or ticker == "NAN":
+    if ticker == "CASH" or not ticker or ticker == "NAN" or ticker == "":
         return 1.0 
     try:
         df = fdr.DataReader(ticker)
@@ -83,7 +83,8 @@ def load_history() -> pd.DataFrame:
     df = safe_to_numeric(df, "Profit")
     
     if not df.empty:
-        for c in ["Owner", "Category", "Sub_Category", "Liquidity", "Note"]:
+        # [한글 IME 버그 방지] 모든 텍스트 컬럼 결측치를 완전한 빈 문자열로 초기화
+        for c in ["Owner", "Category", "Sub_Category", "Liquidity", "Note", "Record_Date"]:
             df[c] = df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
         
         df['Category'] = df['Category'].replace("금융자산", "금융자산(수기)")
@@ -116,6 +117,7 @@ def load_realized() -> pd.DataFrame:
         df = pd.DataFrame(columns=REALIZED_COLUMNS)
     
     df = _ensure_columns(df, REALIZED_COLUMNS)
+    # [한글 IME 버그 방지]
     for c in ["Date", "Owner", "Category", "Item", "Note"]:
         df[c] = df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
     df = safe_to_numeric(df, "Amount")
@@ -141,12 +143,18 @@ def get_live_portfolio() -> pd.DataFrame:
     port_df = _ensure_columns(port_df, PORTFOLIO_COLUMNS)
     
     if not port_df.empty:
+        # [한글 IME 버그 방지 및 문자열 강제 변환]
         port_df['Account_Type'] = port_df['Account_Type'].fillna('일반').astype(str).replace({'<NA>': '일반', 'nan': '일반', 'None': '일반', '': '일반'})
-        for c in ["Owner", "Broker", "Ticker", "Stock_Name"]:
-            port_df[c] = port_df[c].fillna('미입력').astype(str).replace({'<NA>': '미입력', 'nan': '미입력', 'None': '미입력'})
+        for c in ["Owner", "Broker", "Stock_Name", "LastUpdated"]:
+            port_df[c] = port_df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
+        
+        # [핵심 로직] 종목코드(Ticker) 강제 문자형 변환 및 6자리 0 채우기 (000660 유지)
+        port_df['Ticker'] = port_df['Ticker'].astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
+        port_df['Ticker'] = port_df['Ticker'].apply(lambda x: x[:-2] if x.endswith('.0') else x) # 소수점 잘라내기
+        port_df['Ticker'] = port_df['Ticker'].apply(lambda x: x.zfill(6) if x.isdigit() and len(x) > 0 else x)
 
     def auto_fill_port_liquidity(row):
-        if pd.isna(row.get('Liquidity')) or str(row.get('Liquidity')).strip() in ["", "nan", "<NA>", "미입력"]:
+        if pd.isna(row.get('Liquidity')) or str(row.get('Liquidity')).strip() in ["", "nan", "<NA>"]:
             if any(k in str(row.get('Account_Type', '')) for k in ['연금', 'IRP']):
                 return "비유동"
             return "유동"
@@ -162,7 +170,7 @@ def get_live_portfolio() -> pd.DataFrame:
     
     def is_us_stock(ticker):
         t = str(ticker).strip().upper()
-        if t in ["CASH", "미입력"] or not t or t == "NAN": return False
+        if t in ["CASH", ""] or not t or t == "NAN": return False
         return not (len(t) == 6 and t[0].isdigit())
 
     port_df['Is_US'] = port_df['Ticker'].apply(is_us_stock)
@@ -263,7 +271,6 @@ with tabs[0]:
         profit_color = "#d32f2f" if financial_profits > 0 else "#1976d2" 
         profit_display = f"{financial_profits/EOK:,.2f}억" if abs(financial_profits) >= EOK else f"{financial_profits/10000:,.0f}만"
 
-        # [수정] 마크다운 블록 오류 방지용 좌측 정렬 및 빈 줄 제거
         st.markdown(f"""
 <div style="display: flex; flex-wrap: wrap; gap: 10px; text-align: center; margin-bottom: 20px;">
     <div style="flex: 1 1 30%; min-width: 140px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
@@ -307,7 +314,6 @@ with tabs[0]:
         pen_cont = df_this_year[df_this_year['Category'] == '연금납입']['Amount'].sum()
         pen_pct = min(100, (pen_cont / 9000000) * 100) if pen_cont > 0 else 0
 
-        # [수정] 마크다운 블록 오류 방지용 좌측 정렬 및 빈 줄 제거
         st.markdown(f"""
 <div style="background-color: #fcfcfc; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
     <div style="display: flex; flex-wrap: wrap; gap: 20px;">
@@ -421,7 +427,7 @@ with tabs[1]:
             st.success("저장되었습니다.")
             st.rerun()
 
-# --- 3. 주식/포트폴리오 관리 (세금 관리 포함) ---
+# --- 3. 주식/포트폴리오 관리 (세금 관리 & 실시간 조회 복구) ---
 with tabs[2]:
     st.markdown("#### 📈 주식 및 계좌 포트폴리오")
     st.info("💡 **계좌 종류**를 정확히 선택하세요. 현금 예수금은 수량을 0으로 두고 평균매수가에 총액을 적습니다.")
@@ -490,6 +496,46 @@ with tabs[2]:
             save_realized(edited_real)
             st.success("세금 및 실현 손익 데이터가 반영되었습니다.")
             st.rerun()
+
+    st.divider()
+    
+    # [복구 완료] 실시간 포트폴리오 평가 및 증권사별 합계 테이블
+    calc_df = get_live_portfolio()
+    if not calc_df.empty:
+        st.markdown("##### 📊 실시간 포트폴리오 평가")
+        calc_df['Return(%)'] = calc_df.apply(lambda x: (x['Profit_Amt'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
+        
+        disp_df = calc_df.rename(columns={'Avg_Price_KRW': '평단가', 'Current_Price': '현재가', 'Total_Invested': '총투자', 'Current_Value': '평가액', 'Profit_Amt': '수익금'})
+        disp_cols = ['Owner', 'Broker', 'Stock_Name', '평단가', '현재가', '평가액', '수익금', 'Return(%)']
+        
+        styled_disp = disp_df[disp_cols].style.map(color_profit, subset=['수익금', 'Return(%)']).format({
+            '평단가': '{:,.0f}', '현재가': '{:,.0f}', '평가액': '{:,.0f}', '수익금': '{:,.0f}', 'Return(%)': '{:.1f}%'
+        })
+        st.dataframe(styled_disp, use_container_width=True)
+        
+        st.markdown("##### 🏢 증권사별 합계")
+        summary = calc_df.groupby('Broker')[['Total_Invested', 'Current_Value']].sum().reset_index()
+        summary['Total_Profit'] = summary['Current_Value'] - summary['Total_Invested']
+        summary['Total_Return(%)'] = (summary['Total_Profit'] / summary['Total_Invested'] * 100).fillna(0)
+        
+        tot_inv = summary['Total_Invested'].sum()
+        tot_val = summary['Current_Value'].sum()
+        tot_prof = tot_val - tot_inv
+        tot_ret = (tot_prof / tot_inv * 100) if tot_inv > 0 else 0
+        
+        total_row = pd.DataFrame([{
+            'Broker': '🌟 합계', 'Total_Invested': tot_inv, 'Current_Value': tot_val,
+            'Total_Profit': tot_prof, 'Total_Return(%)': tot_ret
+        }])
+        summary = pd.concat([summary, total_row], ignore_index=True)
+        
+        styled_summary = summary.style.apply(highlight_total_row, axis=1) \
+                                      .map(color_profit, subset=['Total_Profit', 'Total_Return(%)']) \
+                                      .format({
+                                          'Total_Invested': '{:,.0f}', 'Current_Value': '{:,.0f}',
+                                          'Total_Profit': '{:,.0f}', 'Total_Return(%)': '{:.1f}%'
+                                      })
+        st.dataframe(styled_summary, use_container_width=True)
 
 # --- 4. 은퇴 시뮬레이션 ---
 with tabs[3]:
