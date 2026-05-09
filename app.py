@@ -353,7 +353,7 @@ with tabs[0]:
             trend_df['순자산'] = trend_df['총자산'] - trend_df['총부채']
             trend_df = trend_df.sort_values('Record_Date')
 
-        tab_chart1, tab_chart2, tab_chart3 = st.tabs(["자산 추이", "종목별 비중(히트맵)", "계좌별 비중"]) 
+        tab_chart1, tab_chart2, tab_chart3 = st.tabs(["종목별 히트맵", "자산 추이", "계좌별 비중"]) 
 
         with tab_chart1:
             if not live_port.empty:
