@@ -356,20 +356,6 @@ with tabs[0]:
         tab_chart1, tab_chart2, tab_chart3 = st.tabs(["자산 추이", "종목별 비중(히트맵)", "계좌별 비중"]) 
 
         with tab_chart1:
-            if not trend_df.empty:
-                fig_trend = go.Figure()
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#81c784'))
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#cfd8dc'))
-                fig_trend.add_trace(go.Scatter(
-                    x=trend_df['Record_Date'], y=trend_df['순자산']/EOK, mode='lines+markers+text', 
-                    text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"), textposition="top center", name='순자산',
-                    textfont=dict(size=11, color='#2e7d32', weight='bold'),
-                    line=dict(color='#2e7d32', width=2), marker=dict(size=6, color='white', line=dict(width=1.5, color='#2e7d32'))
-                ))
-                fig_trend.update_layout(height=300, barmode='relative', xaxis_type='category', hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_trend, use_container_width=True)
-
-        with tab_chart2:
             if not live_port.empty:
                 hm_df = live_port.groupby(['Owner', 'Stock_Name'])[['Current_Value', 'Total_Invested', 'Profit_Amt']].sum().reset_index()
                 hm_df = hm_df[hm_df['Current_Value'] > 0]
@@ -404,6 +390,20 @@ with tabs[0]:
                 else:
                     st.info("비중을 표시할 주식 자산이 없습니다.")
 
+        with tab_chart2:
+            if not trend_df.empty:
+                fig_trend = go.Figure()
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#81c784'))
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#cfd8dc'))
+                fig_trend.add_trace(go.Scatter(
+                    x=trend_df['Record_Date'], y=trend_df['순자산']/EOK, mode='lines+markers+text', 
+                    text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"), textposition="top center", name='순자산',
+                    textfont=dict(size=11, color='#2e7d32', weight='bold'),
+                    line=dict(color='#2e7d32', width=2), marker=dict(size=6, color='white', line=dict(width=1.5, color='#2e7d32'))
+                ))
+                fig_trend.update_layout(height=300, barmode='relative', xaxis_type='category', hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
+                st.plotly_chart(fig_trend, use_container_width=True)
+            
         with tab_chart3:
             if not live_port.empty:
                 plot_df = live_port.dropna(subset=['Owner', 'Account_Type', 'Broker'])
