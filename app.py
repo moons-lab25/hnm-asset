@@ -353,9 +353,23 @@ with tabs[0]:
             trend_df['순자산'] = trend_df['총자산'] - trend_df['총부채']
             trend_df = trend_df.sort_values('Record_Date')
 
-        tab_chart1, tab_chart2, tab_chart3 = st.tabs(["종목별 비중(히트맵)", "자산 추이", "계좌별 비중"]) 
+        tab_chart1, tab_chart2, tab_chart3 = st.tabs(["자산 추이", "종목별 비중(히트맵)", "계좌별 비중"]) 
 
         with tab_chart1:
+            if not trend_df.empty:
+                fig_trend = go.Figure()
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#81c784'))
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#cfd8dc'))
+                fig_trend.add_trace(go.Scatter(
+                    x=trend_df['Record_Date'], y=trend_df['순자산']/EOK, mode='lines+markers+text', 
+                    text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"), textposition="top center", name='순자산',
+                    textfont=dict(size=11, color='#2e7d32', weight='bold'),
+                    line=dict(color='#2e7d32', width=2), marker=dict(size=6, color='white', line=dict(width=1.5, color='#2e7d32'))
+                ))
+                fig_trend.update_layout(height=300, barmode='relative', xaxis_type='category', hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
+                st.plotly_chart(fig_trend, use_container_width=True)
+
+        with tab_chart2:
             if not live_port.empty:
                 hm_df = live_port.groupby(['Owner', 'Stock_Name'])[['Current_Value', 'Total_Invested', 'Profit_Amt']].sum().reset_index()
                 hm_df = hm_df[hm_df['Current_Value'] > 0]
@@ -369,16 +383,16 @@ with tabs[0]:
                         values='Current_Value',
                         color='Return(%)',
                         color_continuous_scale='RdBu_r', 
-                        color_continuous_midpoint=0
+                        color_continuous_midpoint=0,
+                        custom_data=['Return(%)'] # 명시적 custom_data 전달 (NaN 해결의 핵심)
                     )
                     
-                    # 툴팁에 상위 카테고리 대비 비중(percentParent) 추가
                     fig_hm.update_traces(
-                        texttemplate="<b>%{label}</b><br>%{value:,.0f}원<br>(%{color:.1f}%)",
+                        texttemplate="<b>%{label}</b><br>%{value:,.0f}원<br>(%{customdata[0]:.1f}%)",
                         hovertemplate=(
                             "<b>%{label}</b><br>"
                             "평가액: %{value:,.0f}원<br>"
-                            "수익률: %{color:.1f}%<br>"
+                            "수익률: %{customdata[0]:.1f}%<br>"
                             "상위 그룹 대비 비중: %{percentParent:.1%}<br>"
                             "<extra></extra>"
                         ),
@@ -390,22 +404,6 @@ with tabs[0]:
                 else:
                     st.info("비중을 표시할 주식 자산이 없습니다.")
 
-
-        with tab_chart2:
-            if not trend_df.empty:
-                fig_trend = go.Figure()
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#81c784'))
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#cfd8dc'))
-                fig_trend.add_trace(go.Scatter(
-                    x=trend_df['Record_Date'], y=trend_df['순자산']/EOK, mode='lines+markers+text', 
-                    text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"), textposition="top center", name='순자산',
-                    textfont=dict(size=11, color='#2e7d32', weight='bold'),
-                    line=dict(color='#2e7d32', width=2), marker=dict(size=6, color='white', line=dict(width=1.5, color='#2e7d32'))
-                ))
-                fig_trend.update_layout(height=300, barmode='relative', xaxis_type='category', hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_trend, use_container_width=True)
-                
-            
         with tab_chart3:
             if not live_port.empty:
                 plot_df = live_port.dropna(subset=['Owner', 'Account_Type', 'Broker'])
@@ -520,6 +518,32 @@ with tabs[3]:
     
     if not calc_df.empty:
         calc_df['Return(%)'] = calc_df.apply(lambda x: (x['Profit_Amt'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
+        
+        # --- 💡 포트폴리오 인사이트 요약 문구 추가 시작 ---
+        total_invested = calc_df['Total_Invested'].sum()
+        total_value = calc_df['Current_Value'].sum()
+        total_profit = total_value - total_invested
+        total_return_rate = (total_profit / total_invested * 100) if total_invested > 0 else 0
+
+        if total_profit > 0:
+            insight_msg = f"현재 총 투자 원금 <strong>{total_invested/10000:,.0f}만 원</strong> 대비 <span style='color:#d32f2f; font-weight:bold;'>{total_profit/10000:,.0f}만 원 수익 (+{total_return_rate:.2f}%)</span>을 기록 중입니다. 멋진 성과네요! 🎉"
+            border_color = "#d32f2f"
+            bg_color = "#ffebee"
+        elif total_profit < 0:
+            insight_msg = f"현재 총 투자 원금 <strong>{total_invested/10000:,.0f}만 원</strong> 대비 <span style='color:#1976d2; font-weight:bold;'>{abs(total_profit)/10000:,.0f}만 원 손실 ({total_return_rate:.2f}%)</span>을 기록 중입니다. 시장 상황을 주시해 보세요. 📊"
+            border_color = "#1976d2"
+            bg_color = "#e3f2fd"
+        else:
+            insight_msg = f"현재 총 투자 원금 <strong>{total_invested/10000:,.0f}만 원</strong>과 평가액이 동일합니다. ➖"
+            border_color = "#9e9e9e"
+            bg_color = "#f5f5f5"
+            
+        st.markdown(f"""
+        <div style='background-color: {bg_color}; padding: 15px; border-radius: 8px; border-left: 5px solid {border_color}; margin-bottom: 25px; font-size: 15px; color: #424242;'>
+            💡 {insight_msg}
+        </div>
+        """, unsafe_allow_html=True)
+        # --- 💡 포트폴리오 인사이트 요약 문구 추가 끝 ---
         
         st.markdown("##### 📊 실시간 포트폴리오 평가")
         disp_df = calc_df.rename(columns={'Avg_Price_KRW': '평단가', 'Current_Price': '현재가', 'Total_Invested': '총투자', 'Current_Value': '평가액', 'Profit_Amt': '수익금'})
