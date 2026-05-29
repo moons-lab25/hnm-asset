@@ -422,7 +422,7 @@ with tabs[1]:
     editor_df = editor_df.drop(columns=["Record_DT", "Record_Month"], errors="ignore")
     
     with st.form("manual_asset_form"):
-        edited_df = st.data_editor(editor_df, num_rows="dynamic", use_container_width=True, height=300, column_config={
+        edited_df = st.data_editor(editor_df, num_rows="dynamic", use_container_width=True, height=300, hide_index=True, column_config={
             "Record_Date": st.column_config.TextColumn("날짜", required=True),
             "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
             "Category": st.column_config.SelectboxColumn("분류", options=["부동산", "금융자산(수기)", "부채", "기타"]),
@@ -462,7 +462,7 @@ with tabs[2]:
     filtered_port_df = port_df[mask]
     
     with st.form("portfolio_form"):
-        edited_port = st.data_editor(filtered_port_df, num_rows="dynamic", use_container_width=True, height=250, column_config={
+        edited_port = st.data_editor(filtered_port_df, num_rows="dynamic", use_container_width=True, height=250, hide_index=True, column_config={
             "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
             "Broker": st.column_config.TextColumn("증권사", required=True),
             "Account_Type": st.column_config.SelectboxColumn("계좌 종류", options=["일반", "ISA", "연금저축", "IRP", "비과세", "기타"], required=True),
@@ -513,7 +513,7 @@ with tabs[2]:
     
     real_df = load_realized()
     with st.form("realized_form"):
-        edited_real = st.data_editor(real_df, num_rows="dynamic", use_container_width=True, height=200, column_config={
+        edited_real = st.data_editor(real_df, num_rows="dynamic", use_container_width=True, height=200, hide_index=True, column_config={
             "Date": st.column_config.TextColumn("입력월/날짜 (예: 2026-04)", required=True),
             "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
             "Category": st.column_config.SelectboxColumn("구분", options=["해외주식매도", "국내주식매도", "배당/이자", "ISA납입", "연금납입"]),
@@ -584,7 +584,7 @@ with tabs[3]:
             styled_disp = disp_df[disp_cols].style.map(color_profit, subset=['수익금', 'Return(%)']).format({
                 '평단가': '{:,.0f}', '현재가': '{:,.0f}', '평가액': '{:,.0f}', '수익금': '{:,.0f}', 'Return(%)': '{:.1f}%'
             })
-            st.dataframe(styled_disp, use_container_width=True)
+            st.dataframe(styled_disp, use_container_width=True, hide_index=True)
             
             st.divider()
             st.markdown("##### 🏢 소유자 및 증권사별 합계")
@@ -633,7 +633,7 @@ with tabs[3]:
                                               'Total_Invested': '{:,.0f}', 'Current_Value': '{:,.0f}',
                                               'Total_Profit': '{:,.0f}', 'Total_Return(%)': '{:.1f}%'
                                           })
-            st.dataframe(styled_summary, use_container_width=True)
+            st.dataframe(styled_summary, use_container_width=True, hide_index=True)
     else:
         st.info("포트폴리오 데이터가 존재하지 않습니다.")
 
