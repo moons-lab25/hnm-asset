@@ -7,9 +7,11 @@ import os
 import FinanceDataReader as fdr
 from streamlit_gsheets import GSheetsConnection 
 
+# --- 설정 및 컬럼 정의 ---
 ASSET_COLUMNS = ["Record_Date", "Owner", "Category", "Sub_Category", "Liquidity", "Amount", "Profit", "Note"]
 SIM_COLUMNS = ["Sim_Date", "Target_Age", "Monthly_Investment", "Result_Final_Asset"]
-PORTFOLIO_COLUMNS = ["Owner", "Broker", "Ticker", "Stock_Name", "Liquidity", "Shares", "Avg_Price"]
+PORTFOLIO_COLUMNS = ["Owner", "Broker", "Account_Type", "Ticker", "Stock_Name", "Liquidity", "Shares", "Avg_Price", "LastUpdated"] 
+REALIZED_COLUMNS = ["Date", "Owner", "Category", "Item", "Amount", "Note"]
 
 EOK = 100_000_000
 
@@ -19,7 +21,7 @@ def _ensure_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
     for c in cols:
         if c not in df.columns:
-            df[c] = pd.NA
+            df[c] = ""
     return df[cols]
 
 def safe_to_numeric(df: pd.DataFrame, col: str) -> pd.DataFrame:
@@ -50,7 +52,7 @@ def get_usd_krw_rate() -> float:
 @st.cache_data(ttl=3600)
 def get_current_price(ticker: str) -> float:
     ticker = str(ticker).strip().upper()
-    if ticker == "CASH" or not ticker or ticker == "NAN":
+    if ticker == "CASH" or not ticker or ticker == "NAN" or ticker == "":
         return 1.0 
     try:
         df = fdr.DataReader(ticker)
@@ -81,8 +83,8 @@ def load_history() -> pd.DataFrame:
     df = safe_to_numeric(df, "Profit")
     
     if not df.empty:
-        for c in ["Owner", "Category", "Sub_Category", "Liquidity", "Note"]:
-            df[c] = df[c].astype(str).replace('<NA>', '').replace('nan', '')
+        for c in ["Owner", "Category", "Sub_Category", "Liquidity", "Note", "Record_Date"]:
+            df[c] = df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
         
         df['Category'] = df['Category'].replace("금융자산", "금융자산(수기)")
 
@@ -106,6 +108,24 @@ def save_history(df: pd.DataFrame):
             df = df.drop(columns=[c])
     conn.update(worksheet="AssetHistory", data=df)
 
+def load_realized() -> pd.DataFrame:
+    conn = get_gsheets_conn()
+    try:
+        df = conn.read(worksheet="Realized", ttl=0).dropna(how="all")
+    except Exception:
+        df = pd.DataFrame(columns=REALIZED_COLUMNS)
+    
+    df = _ensure_columns(df, REALIZED_COLUMNS)
+    for c in ["Date", "Owner", "Category", "Item", "Note"]:
+        df[c] = df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
+    df = safe_to_numeric(df, "Amount")
+    return df
+
+def save_realized(df: pd.DataFrame):
+    conn = get_gsheets_conn()
+    df = _ensure_columns(df, REALIZED_COLUMNS)
+    conn.update(worksheet="Realized", data=df)
+
 def save_portfolio(df: pd.DataFrame):
     conn = get_gsheets_conn()
     df = _ensure_columns(df, PORTFOLIO_COLUMNS)
@@ -120,9 +140,18 @@ def get_live_portfolio() -> pd.DataFrame:
         
     port_df = _ensure_columns(port_df, PORTFOLIO_COLUMNS)
     
+    if not port_df.empty:
+        port_df['Account_Type'] = port_df['Account_Type'].fillna('일반').astype(str).replace({'<NA>': '일반', 'nan': '일반', 'None': '일반', '': '일반'})
+        for c in ["Owner", "Broker", "Stock_Name", "LastUpdated"]:
+            port_df[c] = port_df[c].fillna('').astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
+        
+        port_df['Ticker'] = port_df['Ticker'].astype(str).replace({'<NA>': '', 'nan': '', 'None': ''})
+        port_df['Ticker'] = port_df['Ticker'].apply(lambda x: x[:-2] if x.endswith('.0') else x) 
+        port_df['Ticker'] = port_df['Ticker'].apply(lambda x: x.zfill(6) if x.isdigit() and len(x) > 0 else x)
+
     def auto_fill_port_liquidity(row):
         if pd.isna(row.get('Liquidity')) or str(row.get('Liquidity')).strip() in ["", "nan", "<NA>"]:
-            if any(k in str(row.get('Broker', '')) for k in ['연금', 'IRP', '퇴직']):
+            if any(k in str(row.get('Account_Type', '')) for k in ['연금', 'IRP']):
                 return "비유동"
             return "유동"
         return str(row.get('Liquidity', '유동')).strip()
@@ -137,7 +166,7 @@ def get_live_portfolio() -> pd.DataFrame:
     
     def is_us_stock(ticker):
         t = str(ticker).strip().upper()
-        if t == "CASH" or not t or t == "NAN": return False
+        if t in ["CASH", ""] or not t or t == "NAN": return False
         return not (len(t) == 6 and t[0].isdigit())
 
     port_df['Is_US'] = port_df['Ticker'].apply(is_us_stock)
@@ -160,7 +189,6 @@ def get_live_portfolio() -> pd.DataFrame:
     
     return port_df
 
-# --- 데이터프레임 수익률 컬러링 공통 함수 ---
 def color_profit(val):
     if pd.isna(val): return ''
     if isinstance(val, (int, float)):
@@ -169,11 +197,6 @@ def color_profit(val):
         elif val < 0:
             return 'color: #1976d2; font-weight: bold;' 
     return ''
-
-def highlight_total_row(row):
-    if row['Broker'] == '🌟 전체 합계':
-        return ['background-color: #fffde7; font-weight: bold;'] * len(row) 
-    return [''] * len(row)
 
 # --- 앱 시작 ---
 st.set_page_config(page_title="Family Asset Manager", layout="wide")
@@ -185,21 +208,29 @@ target_date = st.sidebar.date_input("목표 달성 기준일", value=date(2033, 
 days_left = (target_date - date.today()).days
 st.sidebar.info(f"📍 목표일까지 **{days_left:,}일** 남았습니다.")
 
-tabs = st.tabs(["📊 대시보드", "📝 자산 일괄 관리(수기)", "📈 주식/포트폴리오 관리", "📈 은퇴 시뮬레이션"])
+tabs = st.tabs(["📊 대시보드", "📝 일괄 관리(수기)", "⚙️ 포트폴리오 관리", "🔍 포트폴리오 분석", "📈 시뮬레이션"])
 
 # --- 1. 대시보드 ---
 with tabs[0]:
     df_hist = load_history()
     live_port = get_live_portfolio()
+    df_real = load_realized()
     
     if df_hist.empty and live_port.empty:
-        st.warning("데이터가 없습니다. 자산을 등록해주세요. (초기 설정 중이시라면 정상입니다!)")
+        st.warning("데이터가 없습니다. 자산을 등록해주세요.")
     else:
         if not df_hist.empty:
             latest_dt = df_hist['Record_DT'].max()
             df_latest_manual = df_hist[(df_hist['Record_DT'] == latest_dt) & (df_hist['Category'] != "금융자산(자동)")].copy()
+            df_latest_snap = df_hist[df_hist['Record_DT'] == latest_dt]
+            snap_assets = df_latest_snap[df_latest_snap["Category"] != "부채"]["Amount"].sum()
+            snap_debts = df_latest_snap[df_latest_snap["Category"] == "부채"]["Amount"].sum()
+            snap_net_worth = snap_assets - snap_debts
+            snap_date_str = df_latest_snap['Record_Date'].iloc[0] if not df_latest_snap.empty else "없음"
         else:
             df_latest_manual = pd.DataFrame(columns=ASSET_COLUMNS)
+            snap_net_worth = 0
+            snap_date_str = "없음"
         
         manual_assets = df_latest_manual[df_latest_manual["Category"] != "부채"]["Amount"].sum()
         manual_debts = df_latest_manual[df_latest_manual["Category"] == "부채"]["Amount"].sum()
@@ -215,7 +246,101 @@ with tabs[0]:
         financial_assets = manual_fin + live_fin_asset
         financial_profits = live_fin_profit + df_latest_manual[df_latest_manual["Category"] == "금융자산(수기)"]["Profit"].sum()
 
-        summary_message = "첫 자산 스냅샷을 기록하시면 다음부터 이전 기록과 비교해 드릴게요!"
+        def get_owner_stats(owner_name):
+            port_inv = live_port[live_port['Owner'] == owner_name]['Total_Invested'].sum() if not live_port.empty else 0
+            port_prof = live_port[live_port['Owner'] == owner_name]['Profit_Amt'].sum() if not live_port.empty else 0
+            
+            man_df = df_latest_manual[(df_latest_manual["Category"] == "금융자산(수기)") & (df_latest_manual["Owner"] == owner_name)]
+            man_prof = man_df["Profit"].sum()
+            man_inv = man_df["Amount"].sum() - man_prof
+            
+            tot_inv = port_inv + man_inv
+            tot_prof = port_prof + man_prof
+            
+            rate = (tot_prof / tot_inv * 100) if tot_inv > 0 else 0
+            color = "#d32f2f" if rate > 0 else "#1976d2" if rate < 0 else "#555"
+            return rate, color
+            
+        wife_rate, wife_color = get_owner_stats("본인")
+        husband_rate, husband_color = get_owner_stats("남편")
+
+        principal = financial_assets - financial_profits
+        fin_return_rate = (financial_profits / principal * 100) if principal > 0 else 0
+        profit_color = "#d32f2f" if financial_profits > 0 else "#1976d2" 
+        profit_display = f"{financial_profits/EOK:,.2f}억" if abs(financial_profits) >= EOK else f"{financial_profits/10000:,.0f}만"
+
+        st.markdown(f"""
+<div style="display: flex; flex-wrap: wrap; gap: 10px; text-align: center; margin-bottom: 10px;">
+    <div style="flex: 1 1 30%; min-width: 140px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
+        <p style="margin: 0; font-size: 13px; color: #757575;">현재 순자산 (부채 차감)</p>
+        <p style="margin: 5px 0 0 0; font-size: 22px; font-weight: 800; color: #424242;">{net_worth/EOK:,.2f} 억</p>
+    </div>
+    <div style="flex: 1 1 30%; min-width: 140px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
+        <p style="margin: 0; font-size: 13px; color: #757575;">금융자산 합계</p>
+        <p style="margin: 5px 0 0 0; font-size: 22px; font-weight: 800; color: #1565c0;">{financial_assets/EOK:,.2f} 억</p>
+    </div>
+    <div style="flex: 1 1 30%; min-width: 200px; padding: 15px; border-radius: 8px; background-color: #ffffff; border: 1px solid #e0e0e0;">
+        <p style="margin: 0; font-size: 13px; color: #757575;">총 수익률 (미실현+실현)</p>
+        <p style="margin: 5px 0 8px 0; font-size: 22px; font-weight: 800; color: {profit_color};">
+            {fin_return_rate:.2f}% <span style="font-size: 16px; font-weight: bold;">({profit_display})</span>
+        </p>
+        <div style="display: flex; justify-content: space-around; border-top: 1px solid #eeeeee; padding-top: 8px; margin-top: 5px;">
+            <span style="font-size: 13px; color: #616161;">👩 본인: <strong style="color: {wife_color};">{wife_rate:.1f}%</strong></span>
+            <span style="font-size: 13px; color: #616161;">👨 남편: <strong style="color: {husband_color};">{husband_rate:.1f}%</strong></span>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+        if snap_date_str != "없음":
+            diff_net_worth = net_worth - snap_net_worth
+            if diff_net_worth > 0:
+                commentary = f"💡 최근 스냅샷(<strong>{snap_date_str}</strong>) 대비 현재 순자산이 <span style='color:#d32f2f; font-weight:bold;'>{diff_net_worth/10000:,.0f}만 원 증가</span>했습니다. 📈"
+            elif diff_net_worth < 0:
+                commentary = f"💡 최근 스냅샷(<strong>{snap_date_str}</strong>) 대비 현재 순자산이 <span style='color:#1976d2; font-weight:bold;'>{abs(diff_net_worth)/10000:,.0f}만 원 감소</span>했습니다. 📉"
+            else:
+                commentary = f"💡 최근 스냅샷(<strong>{snap_date_str}</strong>)과 현재 순자산이 동일합니다. ➖"
+            
+            st.markdown(f"<div style='text-align: right; margin-bottom: 25px; font-size: 14px; color: #555;'>{commentary}</div>", unsafe_allow_html=True)
+
+        st.markdown("### 🚨 세금 알리미")
+        
+        curr_year = str(date.today().year)
+        df_real['Year'] = pd.to_datetime(df_real['Date'], errors='coerce').dt.year.astype(str)
+        df_this_year = df_real[df_real['Year'] == curr_year]
+        
+        os_profit = df_this_year[df_this_year['Category'] == '해외주식매도']['Amount'].sum()
+        os_tax = max(0, (os_profit - 2500000) * 0.22)
+        os_pct = min(100, (os_profit / 2500000) * 100) if os_profit > 0 else 0
+        os_color = "#e53935" if os_profit > 2500000 else "#43a047"
+        
+        fin_income = df_this_year[df_this_year['Category'] == '배당/이자']['Amount'].sum()
+        fin_pct = min(100, (fin_income / 20000000) * 100) if fin_income > 0 else 0
+        fin_color = "#e53935" if fin_income > 20000000 else "#fdd835" if fin_income > 15000000 else "#1e88e5"
+
+        st.markdown(f"""
+<div style="background-color: #fcfcfc; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+    <div style="display: flex; flex-wrap: wrap; gap: 20px;">
+        <div style="flex: 1; min-width: 250px;">
+            <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">🌍 해외주식 양도소득세 (250만 원 기본공제)</p>
+            <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
+                <div style="background-color: {os_color}; width: {os_pct}%; height: 100%; border-radius: 5px;"></div>
+            </div>
+            <p style="margin: 0; font-size: 13px; color: #757575;">현재 실현 수익: {os_profit/10000:,.0f}만 원 <strong style="color:{os_color};">(예상 세금: {os_tax/10000:,.0f}만 원)</strong></p>
+        </div>
+        <div style="flex: 1; min-width: 250px; border-left: 1px solid #eeeeee; padding-left: 20px;">
+            <p style="margin: 0 0 5px 0; font-size: 14px; font-weight: bold; color: #424242;">💰 금융소득종합과세 (2,000만 원 한도)</p>
+            <div style="background-color: #eeeeee; border-radius: 5px; height: 10px; width: 100%; margin-bottom: 5px;">
+                <div style="background-color: {fin_color}; width: {fin_pct}%; height: 100%; border-radius: 5px;"></div>
+            </div>
+            <p style="margin: 0; font-size: 13px; color: #757575;">올해 누적 배당/이자: {fin_income/10000:,.0f}만 원</p>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+        st.divider()
+
         trend_df = pd.DataFrame()
         if not df_hist.empty:
             trend_df = df_hist.groupby('Record_Date').apply(lambda x: pd.Series({
@@ -225,311 +350,309 @@ with tabs[0]:
             trend_df['순자산'] = trend_df['총자산'] - trend_df['총부채']
             trend_df = trend_df.sort_values('Record_Date')
 
-            if len(trend_df) >= 1:
-                today_str = date.today().strftime("%Y-%m-%d")
-                if len(trend_df) >= 2 and trend_df.iloc[-1]['Record_Date'] == today_str:
-                    past_record = trend_df.iloc[-2]
-                else:
-                    past_record = trend_df.iloc[-1]
+        tab_chart1, tab_chart2, tab_chart3 = st.tabs(["종목별 히트맵", "자산 추이", "계좌별 비중"]) 
+
+        with tab_chart1:
+            if not live_port.empty:
+                hm_df = live_port.groupby(['Owner', 'Stock_Name'])[['Current_Value', 'Total_Invested', 'Profit_Amt']].sum().reset_index()
+                hm_df = hm_df[hm_df['Current_Value'] > 0]
                 
-                past_date = past_record['Record_Date']
-                past_nw = past_record['순자산']
-                diff = net_worth - past_nw
-                
-                if diff > 0:
-                    summary_message = f"🎉 지난번 기록({past_date}) 대비 순자산이 <strong style='color:#d32f2f;'>{diff/EOK:,.2f}억원 증가</strong>하며 우상향 순항 중입니다!"
-                elif diff < 0:
-                    summary_message = f"💡 지난번 기록({past_date}) 대비 순자산이 <strong style='color:#1976d2;'>{abs(diff)/EOK:,.2f}억원 감소</strong>했습니다. 잠시 쉬어가는 구간이네요!"
+                if not hm_df.empty:
+                    hm_df['Return(%)'] = hm_df.apply(lambda x: (x['Profit_Amt'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
+                    
+                    fig_hm = px.treemap(
+                        hm_df, 
+                        path=[px.Constant('전체 포트폴리오'), 'Owner', 'Stock_Name'], 
+                        values='Current_Value',
+                        color='Return(%)',
+                        color_continuous_scale='RdBu_r', 
+                        color_continuous_midpoint=0,
+                        custom_data=['Return(%)']
+                    )
+                    
+                    fig_hm.update_traces(
+                        texttemplate="<b>%{label}</b><br>%{value:,.0f}원<br>(%{customdata[0]:.1f}%)",
+                        hovertemplate=(
+                            "<b>%{label}</b><br>"
+                            "평가액: %{value:,.0f}원<br>"
+                            "수익률: %{customdata[0]:.1f}%<br>"
+                            "상위 그룹 대비 비중: %{percentParent:.1%}<br>"
+                            "<extra></extra>"
+                        ),
+                        textposition="middle center",
+                        textfont=dict(size=14)
+                    )
+                    fig_hm.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
+                    st.plotly_chart(fig_hm, use_container_width=True)
                 else:
-                    summary_message = f"⚖️ 지난번 기록({past_date})과 순자산 규모가 동일하게 유지되고 있습니다."
+                    st.info("비중을 표시할 주식 자산이 없습니다.")
 
-        st.markdown("### 💎 현재 자산 요약")
-        st.markdown(f"""
-        <div style="background-color: #f8f9fa; border-left: 5px solid #2e7d32; padding: 15px; margin-bottom: 20px; border-radius: 0 5px 5px 0;">
-            <span style="font-size: 16px; color: #333;">{summary_message}</span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        principal = financial_assets - financial_profits
-        fin_return_rate = (financial_profits / principal * 100) if principal > 0 else 0
-        profit_color = "#d32f2f" if financial_profits > 0 else "#1976d2" 
-
-        if abs(financial_profits) >= EOK:
-            profit_display = f"{financial_profits/EOK:,.2f}억원"
-        else:
-            profit_display = f"{financial_profits/10000:,.0f}만원"
-
-        st.markdown(f"""
-        <div style="display: flex; gap: 20px; text-align: center; margin-bottom: 30px;">
-            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #f1f8e9; border: 1px solid #c5e1a5;">
-                <p style="margin: 0; font-size: 16px; color: #555;">현재 순자산 (부채 차감)</p>
-                <p style="margin: 5px 0 0 0; font-size: 32px; font-weight: 800; color: #2e7d32;">{net_worth/EOK:,.2f} 억</p>
-            </div>
-            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #e3f2fd; border: 1px solid #90caf9;">
-                <p style="margin: 0; font-size: 16px; color: #555;">금융자산 합계</p>
-                <p style="margin: 5px 0 0 0; font-size: 32px; font-weight: 800; color: #1565c0;">{financial_assets/EOK:,.2f} 억</p>
-            </div>
-            <div style="flex: 1; padding: 20px; border-radius: 10px; background-color: #fff8e1; border: 1px solid #ffe082;">
-                <p style="margin: 0; font-size: 16px; color: #555;">금융자산 총 수익률</p>
-                <p style="margin: 5px 0 0 0; font-size: 32px; font-weight: 800; color: {profit_color};">
-                    {fin_return_rate:.2f}% <span style="font-size: 20px; font-weight: bold;">({profit_display})</span>
-                </p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown(f"### 🚩 목표 달성 현황 ({target_date.strftime('%Y년 %m월 %d일')}까지 {target_fin_goal/EOK:.0f}억)")
-        progress_pct = min(1.0, financial_assets / target_fin_goal)
-        
-        fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
-            value = financial_assets / EOK,
-            number = {'suffix': " 억", 'font': {'size': 40, 'color': '#1565c0', 'weight': 'bold'}},
-            delta = {'reference': target_fin_goal / EOK, 'position': "top", 'prefix': "목표까지 남은 금액: ", 'suffix': "억"},
-            title = {'text': "금융자산 달성률", 'font': {'size': 20}},
-            gauge = {
-                'axis': {'range': [None, target_fin_goal / EOK], 'tickwidth': 1, 'tickcolor': "darkblue"},
-                'bar': {'color': "#1e88e5"},
-                'bgcolor': "white",
-                'borderwidth': 2,
-                'bordercolor': "gray",
-                'steps': [
-                    {'range': [0, (target_fin_goal / EOK) * 0.5], 'color': '#e3f2fd'},
-                    {'range': [(target_fin_goal / EOK) * 0.5, (target_fin_goal / EOK) * 0.8], 'color': '#bbdefb'}],
-                'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': target_fin_goal / EOK}
-            }
-        ))
-        fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=30, b=20))
-        st.plotly_chart(fig_gauge, use_container_width=True)
-
-        st.divider()
-
-        col_chart1, col_chart2 = st.columns([3, 2]) 
-
-        with col_chart1:
-            st.markdown("### 📈 자산 및 부채 추이 흐름")
+        with tab_chart2:
             if not trend_df.empty:
                 fig_trend = go.Figure()
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#66bb6a'))
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#b0bec5'))
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#81c784'))
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#cfd8dc'))
                 fig_trend.add_trace(go.Scatter(
                     x=trend_df['Record_Date'], y=trend_df['순자산']/EOK, mode='lines+markers+text', 
-                    text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"),
-                    textposition="top center", name='순자산',
-                    textfont=dict(size=13, color='#2e7d32', weight='bold'),
-                    line=dict(color='#2e7d32', width=3), marker=dict(size=8, color='white', line=dict(width=2, color='#2e7d32'))
+                    text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"), textposition="top center", name='순자산',
+                    textfont=dict(size=11, color='#2e7d32', weight='bold'),
+                    line=dict(color='#2e7d32', width=2), marker=dict(size=6, color='white', line=dict(width=1.5, color='#2e7d32'))
                 ))
-                fig_trend.update_layout(height=400, barmode='relative', hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
+                fig_trend.update_layout(height=300, barmode='relative', xaxis_type='category', hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_trend, use_container_width=True)
-
-        with col_chart2:
-            st.markdown("### 🧩 금융자산 구성 비중")
-            if not df_latest_manual.empty or not live_port.empty:
-                manual_fin_df = df_latest_manual[df_latest_manual["Category"] == "금융자산(수기)"].copy()
-                auto_fin_df = pd.DataFrame()
-                if not live_port.empty:
-                    auto_fin_df = live_port[['Owner', 'Broker', 'Ticker', 'Current_Value', 'Liquidity']].copy()
-                    auto_fin_df.rename(columns={'Broker': 'Sub_Category', 'Current_Value': 'Amount'}, inplace=True)
-                    auto_fin_df['Category'] = "금융자산(자동)"
-
-                combined_fin = pd.concat([manual_fin_df, auto_fin_df], ignore_index=True)
-                combined_fin['Root'] = '전체 금융자산'
-
-                tab_sun1, tab_sun2 = st.tabs(["💧 유동성 기준", "🏢 증권사 기준"])
+            
+        with tab_chart3:
+            if not live_port.empty:
+                plot_df = live_port.dropna(subset=['Owner', 'Account_Type', 'Broker'])
+                plot_df = plot_df[(plot_df['Owner'] != '') & (plot_df['Account_Type'] != '') & (plot_df['Broker'] != '')]
                 
-                with tab_sun1:
-                    fig_liq = px.sunburst(combined_fin, path=['Root', 'Owner', 'Liquidity'], values='Amount', color='Owner', color_discrete_sequence=px.colors.qualitative.Pastel)
-                    fig_liq.update_traces(textinfo="label+percent root", insidetextorientation='radial')
-                    fig_liq.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0))
-                    st.plotly_chart(fig_liq, use_container_width=True)
-                    
-                with tab_sun2:
-                    fig_broker = px.sunburst(combined_fin, path=['Root', 'Owner', 'Sub_Category'], values='Amount', color='Owner', color_discrete_sequence=px.colors.qualitative.Set3)
-                    fig_broker.update_traces(textinfo="label+percent root", insidetextorientation='radial')
-                    fig_broker.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0))
-                    st.plotly_chart(fig_broker, use_container_width=True)
+                if not plot_df.empty:
+                    fig_acc = px.sunburst(plot_df, path=['Owner', 'Account_Type', 'Broker'], values='Current_Value', color='Account_Type', color_discrete_sequence=px.colors.qualitative.Set3)
+                    fig_acc.update_traces(textinfo="label+percent root", insidetextorientation='radial')
+                    fig_acc.update_layout(height=280, margin=dict(l=0, r=0, t=0, b=0))
+                    st.plotly_chart(fig_acc, use_container_width=True)
 
 # --- 2. 자산 일괄 관리 ---
 with tabs[1]:
-    st.title("📝 수기 자산 관리 (부동산, 부채, 예적금 등)")
-    st.info("⚠️ **주의:** 주식 및 현금 예수금은 이 탭이 아닌 **[주식/포트폴리오 관리]** 탭에서 관리하세요.")
+    st.markdown("#### 📝 수기 자산 관리")
+    st.info("부동산, 예적금, 부채 등을 관리합니다. 주식/현금은 [포트폴리오 관리] 탭을 이용하세요.")
     
     df_hist = load_history()
     editor_df = df_hist[df_hist['Category'] != '금융자산(자동)'].copy()
     editor_df = editor_df.drop(columns=["Record_DT", "Record_Month"], errors="ignore")
     
-    edited_df = st.data_editor(
-        editor_df, num_rows="dynamic", use_container_width=True, height=400,
-        column_config={
+    with st.form("manual_asset_form"):
+        edited_df = st.data_editor(editor_df, num_rows="dynamic", use_container_width=True, height=300, column_config={
             "Record_Date": st.column_config.TextColumn("날짜", required=True),
             "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
             "Category": st.column_config.SelectboxColumn("분류", options=["부동산", "금융자산(수기)", "부채", "기타"]),
             "Sub_Category": st.column_config.TextColumn("상세 항목"),
             "Liquidity": st.column_config.SelectboxColumn("유동성", options=["유동", "비유동"]),
             "Amount": st.column_config.NumberColumn("금액(원)", format="%,d"),
-            "Profit": st.column_config.NumberColumn("수익(원)", format="%,d"),
-        }
-    )
-    if st.button("💾 수기 데이터 최종 저장", key="save_hist"):
-        auto_df = df_hist[df_hist['Category'] == '금융자산(자동)'].drop(columns=["Record_DT", "Record_Month"], errors="ignore")
-        final_save_df = pd.concat([edited_df, auto_df], ignore_index=True)
-        save_history(final_save_df)
-        st.success("수기 자산이 구글 시트에 저장되었습니다.")
-        st.rerun()
+            "Profit": st.column_config.NumberColumn("수익(원)", format="%,d")
+        })
+        if st.form_submit_button("💾 수기 데이터 최종 저장"):
+            auto_df = df_hist[df_hist['Category'] == '금융자산(자동)'].drop(columns=["Record_DT", "Record_Month"], errors="ignore")
+            final_save_df = pd.concat([edited_df, auto_df], ignore_index=True)
+            save_history(final_save_df)
+            st.success("저장되었습니다.")
+            st.rerun()
 
 # --- 3. 주식/포트폴리오 관리 ---
 with tabs[2]:
-    st.title("📈 주식 및 현금 포트폴리오 관리")
+    st.markdown("#### ⚙️ 주식 및 계좌 포트폴리오 관리")
+    st.info("💡 **계좌 종류**를 정확히 선택하세요. 현금 예수금은 수량을 0으로 두고 평균매수가에 총액을 적습니다.")
     
-    col_port1, col_port2 = st.columns([2, 1])
-    with col_port1:
-        st.info("💡 **해외주식도 원화(KRW) 기준 평균매수가를 그대로 입력하세요!**\n**예수금(CASH)**은 수량을 0으로 두고, **'평균매수가'에 현금 총액**을 입력해 주세요.")
-    with col_port2:
-        if st.button("📸 오늘 날짜로 전체 자산 스냅샷 찍기", type="primary", use_container_width=True):
-            df_hist_full = load_history()
-            live_port_df = get_live_portfolio()
-            today_str = date.today().strftime("%Y-%m-%d")
-            
-            df_hist_full = df_hist_full[df_hist_full['Record_Date'] != today_str]
-            latest_dt = df_hist_full['Record_DT'].max() if not df_hist_full.empty else None
-            
-            new_snapshot = pd.DataFrame()
-            if latest_dt:
-                recent_manual = df_hist_full[(df_hist_full['Record_DT'] == latest_dt) & (df_hist_full['Category'] != "금융자산(자동)")].copy()
-                recent_manual['Record_Date'] = today_str
-                new_snapshot = pd.concat([new_snapshot, recent_manual])
-            
-            if not live_port_df.empty:
-                auto_snap = pd.DataFrame({
-                    "Record_Date": today_str,
-                    "Owner": live_port_df['Owner'],
-                    "Category": "금융자산(자동)",
-                    "Sub_Category": live_port_df['Broker'] + " (" + live_port_df['Stock_Name'] + ")",
-                    "Liquidity": live_port_df['Liquidity'],
-                    "Amount": live_port_df['Current_Value'],
-                    "Profit": live_port_df['Profit_Amt'],
-                    "Note": "실시간 시세 연동"
-                })
-                new_snapshot = pd.concat([new_snapshot, auto_snap])
-            
-            if not new_snapshot.empty:
-                new_snapshot = new_snapshot.drop(columns=["Record_DT", "Record_Month"], errors='ignore')
-                df_hist_full = df_hist_full.drop(columns=["Record_DT", "Record_Month"], errors='ignore')
-                save_history(pd.concat([df_hist_full, new_snapshot], ignore_index=True))
-                st.balloons()
-                st.success(f"{today_str} 기준 스냅샷이 성공적으로 기록되었습니다!")
-
-    original_port_df = get_live_portfolio().drop(columns=['Is_US', 'Avg_Price_KRW', 'Current_Price', 'Total_Invested', 'Current_Value', 'Profit_Amt'], errors='ignore')
+    port_df = get_live_portfolio().drop(columns=['Is_US', 'Avg_Price_KRW', 'Current_Price', 'Total_Invested', 'Current_Value', 'Profit_Amt'], errors='ignore')
+    if "LastUpdated" not in port_df.columns: port_df["LastUpdated"] = ""
     
-    st.markdown("### 🔍 포트폴리오 필터")
+    # 필터 기능 추가
+    st.markdown("##### 🔍 포트폴리오 필터")
     filt_col1, filt_col2 = st.columns(2)
+    owner_list = ["전체"] + [o for o in port_df['Owner'].dropna().unique() if str(o).strip() != ""] if not port_df.empty else ["전체", "본인", "남편", "공동"]
+    broker_list = ["전체"] + [b for b in port_df['Broker'].dropna().unique() if str(b).strip() != ""] if not port_df.empty else ["전체"]
     
-    # 빈 값(NaN 등)을 제외하고 소유자, 증권사 목록 동적 생성
-    owner_list = ["전체"] + [o for o in original_port_df['Owner'].dropna().unique() if str(o).strip() != ""] if not original_port_df.empty else ["전체", "본인", "남편", "공동"]
-    broker_list = ["전체"] + [b for b in original_port_df['Broker'].dropna().unique() if str(b).strip() != ""] if not original_port_df.empty else ["전체"]
+    sel_owner = filt_col1.selectbox("👤 소유자 선택", options=owner_list, key="port_owner")
+    sel_broker = filt_col2.selectbox("🏢 증권사 선택", options=broker_list, key="port_broker")
     
-    sel_owner = filt_col1.selectbox("👤 소유자 선택", options=owner_list)
-    sel_broker = filt_col2.selectbox("🏢 증권사 선택", options=broker_list)
+    mask = pd.Series(True, index=port_df.index)
+    if sel_owner != "전체": mask &= (port_df['Owner'] == sel_owner)
+    if sel_broker != "전체": mask &= (port_df['Broker'] == sel_broker)
     
-    # 원본 데이터에 마스크 적용
-    mask = pd.Series(True, index=original_port_df.index)
-    if sel_owner != "전체":
-        mask &= (original_port_df['Owner'] == sel_owner)
-    if sel_broker != "전체":
-        mask &= (original_port_df['Broker'] == sel_broker)
-        
-    filtered_port_df = original_port_df[mask]
+    filtered_port_df = port_df[mask]
     
-    st.markdown("#### 📝 주식 및 계좌 포트폴리오 관리 (입력/수정)")
-    edited_port = st.data_editor(
-        filtered_port_df, num_rows="dynamic", use_container_width=True, height=250,
-        column_config={
+    with st.form("portfolio_form"):
+        edited_port = st.data_editor(filtered_port_df, num_rows="dynamic", use_container_width=True, height=250, column_config={
             "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
-            "Broker": st.column_config.TextColumn("증권사(예: KB증권)", required=True),
-            "Ticker": st.column_config.TextColumn("종목코드(미국주식 예: AAPL)", required=True),
+            "Broker": st.column_config.TextColumn("증권사", required=True),
+            "Account_Type": st.column_config.SelectboxColumn("계좌 종류", options=["일반", "ISA", "연금저축", "IRP", "비과세", "기타"], required=True),
+            "Ticker": st.column_config.TextColumn("종목코드", required=True),
             "Stock_Name": st.column_config.TextColumn("종목명", required=True),
-            "Liquidity": st.column_config.SelectboxColumn("유동성", options=["유동", "비유동"], required=True),
-            "Shares": st.column_config.NumberColumn("보유수량", format="%,d", min_value=0),
-            "Avg_Price": st.column_config.NumberColumn("평균매수가(원화 기준)", min_value=0.0),
-        }
-    )
-    
-    if st.button("💾 포트폴리오 저장", key="save_port"):
-        # [중요] 화면에 보이는 필터링된 데이터만 덮어쓰면 나머지 데이터가 삭제됨
-        # 필터링에서 제외된 원본 데이터(~mask)와 수정된 데이터를 다시 합쳐서 안전하게 저장
-        final_df = pd.concat([original_port_df[~mask], edited_port], ignore_index=True)
-        save_portfolio(final_df)
-        st.success("포트폴리오가 구글 시트에 저장되었습니다.")
-        st.rerun()
+            "Liquidity": st.column_config.SelectboxColumn("유동성", options=["유동", "비유동"]),
+            "Shares": st.column_config.NumberColumn("수량", format="%,d", min_value=0),
+            "Avg_Price": st.column_config.NumberColumn("평단가(원)", min_value=0.0),
+            "LastUpdated": st.column_config.TextColumn("최근수정일시", disabled=True)
+        })
         
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.form_submit_button("💾 포트폴리오 저장", use_container_width=True):
+                current_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                for idx, row in edited_port.iterrows():
+                    if idx not in port_df.index:
+                        edited_port.at[idx, 'LastUpdated'] = current_ts
+                    else:
+                        old_row = port_df.loc[idx]
+                        if any(str(row[c]) != str(old_row[c]) for c in ["Owner", "Broker", "Account_Type", "Ticker", "Shares", "Avg_Price"]):
+                            edited_port.at[idx, 'LastUpdated'] = current_ts
+                        else:
+                            edited_port.at[idx, 'LastUpdated'] = old_row.get('LastUpdated', current_ts)
+                            
+                # 필터링 제외된 원본 데이터와 수정한 데이터를 안전하게 병합
+                final_df = pd.concat([port_df[~mask], edited_port], ignore_index=True)
+                save_portfolio(final_df)
+                st.success("저장되었습니다.")
+                st.rerun()
+        with col2:
+            if st.form_submit_button("📸 오늘 스냅샷 찍기", type="primary", use_container_width=True):
+                df_h = load_history()
+                live_p = get_live_portfolio()
+                tdy = date.today().strftime("%Y-%m-%d")
+                df_h = df_h[df_h['Record_Date'] != tdy]
+                recent_manual = df_h[(df_h['Record_DT'] == df_h['Record_DT'].max()) & (df_h['Category'] != "금융자산(자동)")].copy() if not df_h.empty else pd.DataFrame()
+                if not recent_manual.empty: recent_manual['Record_Date'] = tdy
+                
+                auto_s = pd.DataFrame({"Record_Date": tdy, "Owner": live_p['Owner'], "Category": "금융자산(자동)", "Sub_Category": live_p['Broker'] + " (" + live_p['Stock_Name'] + ")", "Liquidity": live_p['Liquidity'], "Amount": live_p['Current_Value'], "Profit": live_p['Profit_Amt'], "Note": "자동연동"}) if not live_p.empty else pd.DataFrame()
+                save_history(pd.concat([df_h.drop(columns=["Record_DT", "Record_Month"], errors='ignore'), recent_manual.drop(columns=["Record_DT", "Record_Month"], errors='ignore'), auto_s], ignore_index=True))
+                st.balloons()
+
     st.divider()
     
+    st.markdown("##### 📥 실현 손익 및 절세/배당 기록부")
+    st.info("주식을 매도하여 이익을 확정했거나, 배당금 수령, 연금/ISA에 현금을 납입했을 때 가끔씩 뭉텅이로 입력해두면 대시보드에서 세금을 계산해 줍니다.")
+    
+    real_df = load_realized()
+    with st.form("realized_form"):
+        edited_real = st.data_editor(real_df, num_rows="dynamic", use_container_width=True, height=200, column_config={
+            "Date": st.column_config.TextColumn("입력월/날짜 (예: 2026-04)", required=True),
+            "Owner": st.column_config.SelectboxColumn("소유자", options=["본인", "남편", "공동"]),
+            "Category": st.column_config.SelectboxColumn("구분", options=["해외주식매도", "국내주식매도", "배당/이자", "ISA납입", "연금납입"]),
+            "Item": st.column_config.TextColumn("항목(종목명 또는 증권사)"),
+            "Amount": st.column_config.NumberColumn("금액(원)", format="%,d", required=True),
+            "Note": st.column_config.TextColumn("비고")
+        })
+        if st.form_submit_button("📝 실현 손익/납입액 저장"):
+            save_realized(edited_real)
+            st.success("세금 및 실현 손익 데이터가 반영되었습니다.")
+            st.rerun()
+
+# --- 4. 포트폴리오 분석 ---
+with tabs[3]:
+    st.markdown("#### 🔍 실시간 포트폴리오 분석")
     calc_df = get_live_portfolio()
+    
     if not calc_df.empty:
-        st.subheader("📊 실시간 포트폴리오 평가")
+        # 분석 탭 필터 기능 추가
+        st.markdown("##### 🔍 분석 필터")
+        filt_col1, filt_col2 = st.columns(2)
+        owner_list_calc = ["전체"] + [o for o in calc_df['Owner'].dropna().unique() if str(o).strip() != ""]
+        broker_list_calc = ["전체"] + [b for b in calc_df['Broker'].dropna().unique() if str(b).strip() != ""]
         
-        # 평가 그리드에도 위에서 선택한 필터 동일하게 적용
+        sel_owner_calc = filt_col1.selectbox("👤 소유자 선택", options=owner_list_calc, key="calc_owner")
+        sel_broker_calc = filt_col2.selectbox("🏢 증권사 선택", options=broker_list_calc, key="calc_broker")
+        
         calc_mask = pd.Series(True, index=calc_df.index)
-        if sel_owner != "전체":
-            calc_mask &= (calc_df['Owner'] == sel_owner)
-        if sel_broker != "전체":
-            calc_mask &= (calc_df['Broker'] == sel_broker)
-            
-        filtered_calc_df = calc_df[calc_mask].copy()
+        if sel_owner_calc != "전체": calc_mask &= (calc_df['Owner'] == sel_owner_calc)
+        if sel_broker_calc != "전체": calc_mask &= (calc_df['Broker'] == sel_broker_calc)
         
+        filtered_calc_df = calc_df[calc_mask].copy()
+
         if filtered_calc_df.empty:
             st.info("선택한 조건에 해당하는 포트폴리오 데이터가 없습니다.")
         else:
             filtered_calc_df['Return(%)'] = filtered_calc_df.apply(lambda x: (x['Profit_Amt'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
             
-            disp_df = filtered_calc_df.rename(columns={'Avg_Price_KRW': 'Avg_Price(KRW)'})
-            disp_cols = ['Owner', 'Broker', 'Ticker', 'Stock_Name', 'Liquidity', 'Shares', 'Avg_Price(KRW)', 'Current_Price', 'Total_Invested', 'Current_Value', 'Profit_Amt', 'Return(%)']
+            # --- 💡 포트폴리오 인사이트 요약 문구 ---
+            total_invested = filtered_calc_df['Total_Invested'].sum()
+            total_value = filtered_calc_df['Current_Value'].sum()
+            total_profit = total_value - total_invested
+            total_return_rate = (total_profit / total_invested * 100) if total_invested > 0 else 0
+
+            if total_profit > 0:
+                insight_msg = f"선택한 포트폴리오의 총 투자 원금 <strong>{total_invested/10000:,.0f}만 원</strong> 대비 <span style='color:#d32f2f; font-weight:bold;'>{total_profit/10000:,.0f}만 원 수익 (+{total_return_rate:.2f}%)</span>을 기록 중입니다. 멋진 성과네요! 🎉"
+                border_color = "#d32f2f"
+                bg_color = "#ffebee"
+            elif total_profit < 0:
+                insight_msg = f"선택한 포트폴리오의 총 투자 원금 <strong>{total_invested/10000:,.0f}만 원</strong> 대비 <span style='color:#1976d2; font-weight:bold;'>{abs(total_profit)/10000:,.0f}만 원 손실 ({total_return_rate:.2f}%)</span>을 기록 중입니다. 시장 상황을 주시해 보세요. 📊"
+                border_color = "#1976d2"
+                bg_color = "#e3f2fd"
+            else:
+                insight_msg = f"선택한 포트폴리오의 총 투자 원금 <strong>{total_invested/10000:,.0f}만 원</strong>과 평가액이 동일합니다. ➖"
+                border_color = "#9e9e9e"
+                bg_color = "#f5f5f5"
+                
+            st.markdown(f"""
+            <div style='background-color: {bg_color}; padding: 15px; border-radius: 8px; border-left: 5px solid {border_color}; margin-bottom: 25px; font-size: 15px; color: #424242;'>
+                💡 {insight_msg}
+            </div>
+            """, unsafe_allow_html=True)
             
-            styled_disp = disp_df[disp_cols].style.map(color_profit, subset=['Profit_Amt', 'Return(%)']).format({
-                'Shares': '{:,.0f}', 'Avg_Price(KRW)': '{:,.0f}', 'Current_Price': '{:,.0f}',
-                'Total_Invested': '{:,.0f}', 'Current_Value': '{:,.0f}', 'Profit_Amt': '{:,.0f}', 'Return(%)': '{:.2f}%'
+            st.markdown("##### 📊 실시간 포트폴리오 평가")
+            disp_df = filtered_calc_df.rename(columns={'Avg_Price_KRW': '평단가', 'Current_Price': '현재가', 'Total_Invested': '총투자', 'Current_Value': '평가액', 'Profit_Amt': '수익금'})
+            disp_cols = ['Owner', 'Broker', 'Account_Type', 'Stock_Name', '평단가', '현재가', '평가액', '수익금', 'Return(%)']
+            
+            styled_disp = disp_df[disp_cols].style.map(color_profit, subset=['수익금', 'Return(%)']).format({
+                '평단가': '{:,.0f}', '현재가': '{:,.0f}', '평가액': '{:,.0f}', '수익금': '{:,.0f}', 'Return(%)': '{:.1f}%'
             })
             st.dataframe(styled_disp, use_container_width=True)
             
-            st.markdown("#### 🏢 증권사별 합계 (예수금 포함)")
-            summary = filtered_calc_df.groupby('Broker')[['Total_Invested', 'Current_Value']].sum().reset_index()
-            summary['Total_Profit'] = summary['Current_Value'] - summary['Total_Invested']
-            summary['Total_Return(%)'] = (summary['Total_Profit'] / summary['Total_Invested'] * 100).fillna(0)
+            st.divider()
+            st.markdown("##### 🏢 소유자 및 증권사별 합계")
             
-            tot_inv = summary['Total_Invested'].sum()
-            tot_val = summary['Current_Value'].sum()
-            tot_prof = tot_val - tot_inv
-            tot_ret = (tot_prof / tot_inv * 100) if tot_inv > 0 else 0
+            summary_base = filtered_calc_df.groupby(['Owner', 'Broker'])[['Total_Invested', 'Current_Value']].sum().reset_index()
             
-            total_row = pd.DataFrame([{
-                'Broker': '🌟 전체 합계', 'Total_Invested': tot_inv, 'Current_Value': tot_val,
-                'Total_Profit': tot_prof, 'Total_Return(%)': tot_ret
-            }])
-            summary = pd.concat([summary, total_row], ignore_index=True)
+            final_rows = []
+            for owner in summary_base['Owner'].unique():
+                owner_data = summary_base[summary_base['Owner'] == owner]
+                
+                for _, row in owner_data.iterrows():
+                    final_rows.append(row.to_dict())
+                
+                owner_inv = owner_data['Total_Invested'].sum()
+                owner_val = owner_data['Current_Value'].sum()
+                final_rows.append({
+                    'Owner': owner,
+                    'Broker': f'[{owner}] 소계',
+                    'Total_Invested': owner_inv,
+                    'Current_Value': owner_val
+                })
+                
+            grand_inv = summary_base['Total_Invested'].sum()
+            grand_val = summary_base['Current_Value'].sum()
+            final_rows.append({
+                'Owner': '전체',
+                'Broker': '🌟 총 합계',
+                'Total_Invested': grand_inv,
+                'Current_Value': grand_val
+            })
             
-            styled_summary = summary.style.apply(highlight_total_row, axis=1) \
+            summary_df = pd.DataFrame(final_rows)
+            summary_df['Total_Profit'] = summary_df['Current_Value'] - summary_df['Total_Invested']
+            summary_df['Total_Return(%)'] = summary_df.apply(lambda x: (x['Total_Profit'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
+
+            def highlight_summary_rows(row):
+                if '소계' in row['Broker']:
+                    return ['background-color: #f5f5f5; font-weight: bold;'] * len(row)
+                elif '🌟 총 합계' in row['Broker']:
+                    return ['background-color: #fffde7; font-weight: bold;'] * len(row)
+                return [''] * len(row)
+
+            styled_summary = summary_df.style.apply(highlight_summary_rows, axis=1) \
                                           .map(color_profit, subset=['Total_Profit', 'Total_Return(%)']) \
                                           .format({
                                               'Total_Invested': '{:,.0f}', 'Current_Value': '{:,.0f}',
-                                              'Total_Profit': '{:,.0f}', 'Total_Return(%)': '{:.2f}%'
+                                              'Total_Profit': '{:,.0f}', 'Total_Return(%)': '{:.1f}%'
                                           })
             st.dataframe(styled_summary, use_container_width=True)
+    else:
+        st.info("포트폴리오 데이터가 존재하지 않습니다.")
 
-# --- 4. 은퇴 시뮬레이션 ---
-with tabs[3]:
-    st.title("은퇴 로드맵 시뮬레이터")
+# --- 5. 은퇴 시뮬레이션 ---
+with tabs[4]:
+    st.markdown("#### 은퇴 로드맵 시뮬레이터")
     c_age = 43 
     t_age = st.sidebar.number_input("은퇴 목표 나이", value=50, min_value=c_age + 1)
     m_inv = st.sidebar.number_input("월 추가 투자금 (만원)", value=250)
 
-    if st.button("장기 시뮬레이션 실행"):
+    if st.button("장기 시뮬레이션 실행", use_container_width=True):
         months = (t_age - c_age) * 12
         curr_fin = financial_assets if 'financial_assets' in locals() else 0
-        m_rate = (1 + 0.06) ** (1/12)
+        m_rate = (1 + 0.06) ** (1/12) 
         results = []
         temp_f = curr_fin
         for _ in range(months):
             temp_f = (temp_f * m_rate) + (m_inv * 10_000)
             results.append(temp_f)
-        fig_sim = px.area(y=results, title=f"{t_age}세 은퇴 시 예측 (최종: {results[-1]/EOK:,.2f}억)")
+        fig_sim = px.area(y=results, title=f"{t_age}세 은퇴 시 예측 (최종: {results[-1]/EOK:,.1f}억)")
+        fig_sim.update_layout(height=300, margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_sim, use_container_width=True)
