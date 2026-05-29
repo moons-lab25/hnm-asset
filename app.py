@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import os
 import FinanceDataReader as fdr
 from streamlit_gsheets import GSheetsConnection 
@@ -50,22 +50,29 @@ def get_usd_krw_rate() -> float:
     return 1350.0 
 
 @st.cache_data(ttl=3600)
-def get_current_price(ticker: str) -> float:
+def get_price_info(ticker: str) -> tuple[float, float]:
+    """종목의 (현재가, 등락액)을 반환. 속도 개선을 위해 최근 7일 데이터만 조회"""
     ticker = str(ticker).strip().upper()
-    if ticker == "CASH" or not ticker or ticker == "NAN" or ticker == "":
-        return 1.0 
+    if ticker in ["CASH", "", "NAN"]:
+        return 1.0, 0.0 
     try:
-        df = fdr.DataReader(ticker)
-        if not df.empty:
+        start_dt = (date.today() - timedelta(days=7)).strftime('%Y-%m-%d')
+        df = fdr.DataReader(ticker, start=start_dt)
+        if not df.empty and len(df) >= 1:
             price = float(df.iloc[-1]['Close'])
+            prev_price = float(df.iloc[-2]['Close']) if len(df) >= 2 else price
+            
             is_korean_stock = len(ticker) == 6 and ticker[0].isdigit()
             if not is_korean_stock:
                 usd_krw = get_usd_krw_rate()
                 price = price * usd_krw
-            return price
+                prev_price = prev_price * usd_krw
+                
+            change = price - prev_price
+            return price, change
     except Exception:
         pass
-    return 0.0
+    return 0.0, 0.0
 
 # --- 구글 시트 연동 I/O 함수 ---
 def get_gsheets_conn():
@@ -170,7 +177,13 @@ def get_live_portfolio() -> pd.DataFrame:
         return not (len(t) == 6 and t[0].isdigit())
 
     port_df['Is_US'] = port_df['Ticker'].apply(is_us_stock)
-    port_df['Current_Price'] = port_df['Ticker'].apply(get_current_price)
+    
+    # 속도 개선: 고유한 티커 목록만 먼저 조회하여 매핑
+    unique_tickers = port_df['Ticker'].unique()
+    price_dict = {t: get_price_info(t) for t in unique_tickers}
+    
+    port_df['Current_Price'] = port_df['Ticker'].apply(lambda x: price_dict.get(x, (0.0, 0.0))[0])
+    port_df['Price_Change'] = port_df['Ticker'].apply(lambda x: price_dict.get(x, (0.0, 0.0))[1])
     port_df['Avg_Price_KRW'] = port_df['Avg_Price'] 
     
     def calc_invested(row):
@@ -443,10 +456,9 @@ with tabs[2]:
     st.markdown("#### ⚙️ 주식 및 계좌 포트폴리오 관리")
     st.info("💡 **계좌 종류**를 정확히 선택하세요. 현금 예수금은 수량을 0으로 두고 평균매수가에 총액을 적습니다.")
     
-    port_df = get_live_portfolio().drop(columns=['Is_US', 'Avg_Price_KRW', 'Current_Price', 'Total_Invested', 'Current_Value', 'Profit_Amt'], errors='ignore')
+    port_df = get_live_portfolio().drop(columns=['Is_US', 'Avg_Price_KRW', 'Current_Price', 'Total_Invested', 'Current_Value', 'Profit_Amt', 'Price_Change'], errors='ignore')
     if "LastUpdated" not in port_df.columns: port_df["LastUpdated"] = ""
     
-    # 필터 기능 추가
     st.markdown("##### 🔍 포트폴리오 필터")
     filt_col1, filt_col2 = st.columns(2)
     owner_list = ["전체"] + [o for o in port_df['Owner'].dropna().unique() if str(o).strip() != ""] if not port_df.empty else ["전체", "본인", "남편", "공동"]
@@ -488,7 +500,6 @@ with tabs[2]:
                         else:
                             edited_port.at[idx, 'LastUpdated'] = old_row.get('LastUpdated', current_ts)
                             
-                # 필터링 제외된 원본 데이터와 수정한 데이터를 안전하게 병합
                 final_df = pd.concat([port_df[~mask], edited_port], ignore_index=True)
                 save_portfolio(final_df)
                 st.success("저장되었습니다.")
@@ -532,7 +543,6 @@ with tabs[3]:
     calc_df = get_live_portfolio()
     
     if not calc_df.empty:
-        # 분석 탭 필터 기능 추가
         st.markdown("##### 🔍 분석 필터")
         filt_col1, filt_col2 = st.columns(2)
         owner_list_calc = ["전체"] + [o for o in calc_df['Owner'].dropna().unique() if str(o).strip() != ""]
@@ -552,7 +562,10 @@ with tabs[3]:
         else:
             filtered_calc_df['Return(%)'] = filtered_calc_df.apply(lambda x: (x['Profit_Amt'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
             
-            # --- 💡 포트폴리오 인사이트 요약 문구 ---
+            # 소유자 기준 전체 금액에서의 비중(%) 계산 추가
+            owner_totals = filtered_calc_df.groupby('Owner')['Current_Value'].transform('sum')
+            filtered_calc_df['비중(%)'] = (filtered_calc_df['Current_Value'] / owner_totals * 100).fillna(0)
+            
             total_invested = filtered_calc_df['Total_Invested'].sum()
             total_value = filtered_calc_df['Current_Value'].sum()
             total_profit = total_value - total_invested
@@ -579,12 +592,29 @@ with tabs[3]:
             
             st.markdown("##### 📊 실시간 포트폴리오 평가")
             disp_df = filtered_calc_df.rename(columns={'Avg_Price_KRW': '평단가', 'Current_Price': '현재가', 'Total_Invested': '총투자', 'Current_Value': '평가액', 'Profit_Amt': '수익금'})
-            disp_cols = ['Owner', 'Broker', 'Account_Type', 'Stock_Name', '평단가', '현재가', '평가액', '수익금', 'Return(%)']
+            disp_cols = ['Owner', 'Broker', 'Account_Type', 'Stock_Name', '평단가', '현재가', '평가액', '비중(%)', '수익금', 'Return(%)', 'Price_Change']
             
-            styled_disp = disp_df[disp_cols].style.map(color_profit, subset=['수익금', 'Return(%)']).format({
-                '평단가': '{:,.0f}', '현재가': '{:,.0f}', '평가액': '{:,.0f}', '수익금': '{:,.0f}', 'Return(%)': '{:.1f}%'
+            def style_dataframe(data):
+                df_style = pd.DataFrame('', index=data.index, columns=data.columns)
+                for idx, row in data.iterrows():
+                    # 수익금, 수익률 색상 표기
+                    for col in ['수익금', 'Return(%)']:
+                        if col in data.columns and pd.notna(row[col]):
+                            if row[col] > 0: df_style.at[idx, col] = 'color: #d32f2f; font-weight: bold;'
+                            elif row[col] < 0: df_style.at[idx, col] = 'color: #1976d2; font-weight: bold;'
+                    # 현재가 등락에 따른 색상 표기
+                    if '현재가' in data.columns and 'Price_Change' in data.columns and pd.notna(row['Price_Change']):
+                        if row['Price_Change'] > 0: df_style.at[idx, '현재가'] = 'color: #d32f2f; font-weight: bold;'
+                        elif row['Price_Change'] < 0: df_style.at[idx, '현재가'] = 'color: #1976d2; font-weight: bold;'
+                return df_style
+
+            styled_disp = disp_df[disp_cols].style.apply(style_dataframe, axis=None).format({
+                '평단가': '{:,.0f}', '현재가': '{:,.0f}', '평가액': '{:,.0f}', '수익금': '{:,.0f}', 
+                '비중(%)': '{:.1f}%', 'Return(%)': '{:.1f}%'
             })
-            st.dataframe(styled_disp, use_container_width=True, hide_index=True)
+            
+            # Price_Change 컬럼은 색상 계산용이므로 화면에는 숨김 처리
+            st.dataframe(styled_disp, use_container_width=True, hide_index=True, column_config={'Price_Change': None})
             
             st.divider()
             st.markdown("##### 🏢 소유자 및 증권사별 합계")
