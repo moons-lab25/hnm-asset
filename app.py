@@ -354,12 +354,16 @@ with tabs[0]:
 
         st.divider()
 
+        # 자산 추이 데이터 그룹핑 로직 수정 (부동산, 금융자산 분리)
         trend_df = pd.DataFrame()
         if not df_hist.empty:
             trend_df = df_hist.groupby('Record_Date').apply(lambda x: pd.Series({
-                '총자산': x[x['Category'] != '부채']['Amount'].sum(),
+                '부동산자산': x[x['Category'] == '부동산']['Amount'].sum(),
+                '금융자산': x[x['Category'].isin(['금융자산(수기)', '금융자산(자동)'])]['Amount'].sum(),
+                '기타자산': x[x['Category'] == '기타']['Amount'].sum(),
                 '총부채': x[x['Category'] == '부채']['Amount'].sum()
             })).reset_index()
+            trend_df['총자산'] = trend_df['부동산자산'] + trend_df['금융자산'] + trend_df['기타자산']
             trend_df['순자산'] = trend_df['총자산'] - trend_df['총부채']
             trend_df = trend_df.sort_values('Record_Date')
 
@@ -403,15 +407,32 @@ with tabs[0]:
         with tab_chart2:
             if not trend_df.empty:
                 fig_trend = go.Figure()
-                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['총자산']/EOK, name='자산', marker_color='#81c784'))
+                
+                # Stacked Bar Chart (부동산, 금융, 기타 분리)
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['부동산자산']/EOK, name='부동산', marker_color='#a1887f'))
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['금융자산']/EOK, name='금융자산', marker_color='#64b5f6'))
+                fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=trend_df['기타자산']/EOK, name='기타', marker_color='#e0e0e0'))
+                
+                # 부채 (Negative)
                 fig_trend.add_trace(go.Bar(x=trend_df['Record_Date'], y=-trend_df['총부채']/EOK, name='부채', marker_color='#cfd8dc'))
+                
+                # 순자산 라인 그래프
                 fig_trend.add_trace(go.Scatter(
                     x=trend_df['Record_Date'], y=trend_df['순자산']/EOK, mode='lines+markers+text', 
-                    text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"), textposition="top center", name='순자산',
+                    text=(trend_df['순자산']/EOK).apply(lambda x: f"{x:,.1f}억"), textposition="top center", name='순자산 추이',
                     textfont=dict(size=11, color='#2e7d32', weight='bold'),
                     line=dict(color='#2e7d32', width=2), marker=dict(size=6, color='white', line=dict(width=1.5, color='#2e7d32'))
                 ))
-                fig_trend.update_layout(height=300, barmode='relative', xaxis_type='category', hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
+                
+                # 금융자산 라인 그래프 추가
+                fig_trend.add_trace(go.Scatter(
+                    x=trend_df['Record_Date'], y=trend_df['금융자산']/EOK, mode='lines+markers+text', 
+                    text=(trend_df['금융자산']/EOK).apply(lambda x: f"{x:,.1f}억" if x > 0 else ""), textposition="bottom center", name='금융자산 추이',
+                    textfont=dict(size=11, color='#1565c0', weight='bold'),
+                    line=dict(color='#1565c0', width=2, dash='dot'), marker=dict(size=6, color='white', line=dict(width=1.5, color='#1565c0'))
+                ))
+                
+                fig_trend.update_layout(height=350, barmode='relative', xaxis_type='category', hovermode="x unified", plot_bgcolor='white', paper_bgcolor='white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_trend, use_container_width=True)
             
         with tab_chart3:
@@ -562,7 +583,6 @@ with tabs[3]:
         else:
             filtered_calc_df['Return(%)'] = filtered_calc_df.apply(lambda x: (x['Profit_Amt'] / x['Total_Invested'] * 100) if x['Total_Invested'] > 0 else 0, axis=1)
             
-            # 소유자 기준 전체 금액에서의 비중(%) 계산 추가
             owner_totals = filtered_calc_df.groupby('Owner')['Current_Value'].transform('sum')
             filtered_calc_df['비중(%)'] = (filtered_calc_df['Current_Value'] / owner_totals * 100).fillna(0)
             
@@ -597,12 +617,10 @@ with tabs[3]:
             def style_dataframe(data):
                 df_style = pd.DataFrame('', index=data.index, columns=data.columns)
                 for idx, row in data.iterrows():
-                    # 수익금, 수익률 색상 표기
                     for col in ['수익금', 'Return(%)']:
                         if col in data.columns and pd.notna(row[col]):
                             if row[col] > 0: df_style.at[idx, col] = 'color: #d32f2f; font-weight: bold;'
                             elif row[col] < 0: df_style.at[idx, col] = 'color: #1976d2; font-weight: bold;'
-                    # 현재가 등락에 따른 색상 표기
                     if '현재가' in data.columns and 'Price_Change' in data.columns and pd.notna(row['Price_Change']):
                         if row['Price_Change'] > 0: df_style.at[idx, '현재가'] = 'color: #d32f2f; font-weight: bold;'
                         elif row['Price_Change'] < 0: df_style.at[idx, '현재가'] = 'color: #1976d2; font-weight: bold;'
@@ -613,7 +631,6 @@ with tabs[3]:
                 '비중(%)': '{:.1f}%', 'Return(%)': '{:.1f}%'
             })
             
-            # Price_Change 컬럼은 색상 계산용이므로 화면에는 숨김 처리
             st.dataframe(styled_disp, use_container_width=True, hide_index=True, column_config={'Price_Change': None})
             
             st.divider()
